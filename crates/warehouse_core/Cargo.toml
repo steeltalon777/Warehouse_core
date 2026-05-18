@@ -1,0 +1,29 @@
+[package]
+name = "warehouse_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+sqlx.workspace = true
+time.workspace = true
+dirs.workspace = true
+
+[features]
+default = []
+admin-api = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+wiremock = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

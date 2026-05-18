@@ -1,0 +1,1913 @@
+# Warehouse_client_core: пофазный план реализации Rust offline-first ядра
+
+## 0. Назначение документа
+
+Этот документ описывает план реализации `Warehouse_client_core` — общего Rust-ядра для `WarehouseDesktop` и `WarehouseMobile`.
+
+Цель ядра: вынести из WPF и Kotlin всю общую offline-first логику склада: локальное хранилище, outbox, синхронизацию, клиентские проверки, доменные DTO, обработку конфликтов и стабильный API для UI-клиентов.
+
+`WarehouseAIWorkstation` в этот план не включается. Он развивается отдельно, потому что почти готов, имеет AI-ориентированный сценарий и не является основным offline-first складским клиентом.
+
+## 1. Архитектурная позиция
+
+### 1.1. Что строим
+
+`Warehouse_client_core` — это shared client runtime, который компилируется как Rust-библиотека и предоставляет API для:
+
+- WPF-клиента `WarehouseDesktop` через C ABI, C# wrapper или UniFFI-совместимый слой;
+- Android/Kotlin-клиента `WarehouseMobile` через UniFFI, JNI или Kotlin bindings;
+- внутренних CLI/dev tools для диагностики, миграций, тестирования и smoke-проверок.
+
+### 1.2. Что не строим
+
+`Warehouse_client_core` не является:
+
+- вторым backend;
+- заменой `SyncServer`;
+- локальным источником истины;
+- UI-фреймворком;
+- местом для WPF ViewModel или Android ViewModel;
+- местом для AI-функций `WarehouseAIWorkstation`.
+
+### 1.3. Источник истины
+
+`SyncServer` остаётся единственным authoritative source of truth для складских данных, прав доступа, финальной бизнес-валидации, расчёта остатков и workflow операций.
+
+`Warehouse_client_core` хранит локальные копии и локальные намерения пользователя:
+
+- кэш каталога;
+- кэш сайтов и доступов;
+- кэш остатков и регистров;
+- локальные черновики;
+- outbox событий и операций;
+- sync metadata;
+- историю ошибок и конфликтов.
+
+Финальное принятие изменений всегда выполняет `SyncServer`.
+
+## 2. Целевое разбиение ответственности
+
+### 2.1. Rust core
+
+Внутри `Warehouse_client_core` должны жить:
+
+- доменные DTO;
+- нормализованная локальная SQLite-схема;
+- миграции локальной БД;
+- репозитории локального доступа;
+- HTTP-клиент к `SyncServer`;
+- bootstrap/auth context;
+- pull синхронизация каталога, сайтов, остатков и регистров;
+- push локальных операций;
+- outbox и retry policy;
+- классификация ошибок;
+- conflict state;
+- offline validation;
+- стабильный facade API для UI;
+- FFI-safe DTO и bindings;
+- dev CLI для проверки ядра без UI.
+
+### 2.2. WarehouseDesktop
+
+В `WarehouseDesktop` остаются:
+
+- WPF окна и страницы;
+- MVVM ViewModel;
+- навигация;
+- visual state;
+- Windows-specific shell;
+- выбор путей профиля пользователя;
+- хранение секретов на стороне Windows, если потребуется DPAPI;
+- тонкий C# adapter к Rust core.
+
+### 2.3. WarehouseMobile
+
+В `WarehouseMobile` остаются:
+
+- Android UI;
+- Activity/Fragment/Compose layer;
+- Android ViewModel;
+- camera/barcode scanner;
+- permissions;
+- WorkManager/background scheduling;
+- platform-specific secure storage;
+- тонкий Kotlin adapter к Rust core.
+
+## 3. Целевое дерево проекта
+
+На выходе модуль должен иметь примерно такую структуру:
+
+```text
+Warehouse_client_core/
+  Cargo.toml
+  Cargo.lock
+  README.md
+  LICENSE
+  docs/
+    Core_plan
+    ARCHITECTURE.md
+    API_FOR_CLIENTS.md
+    OFFLINE_FIRST.md
+    SYNC_PROTOCOL.md
+    STORAGE_SCHEMA.md
+    FFI_GUIDE.md
+    TESTING.md
+    RELEASE_CHECKLIST.md
+    TROUBLESHOOTING.md
+  crates/
+    warehouse_core/
+      Cargo.toml
+      src/
+        lib.rs
+        error.rs
+        config.rs
+        time.rs
+        ids.rs
+        domain/
+        auth/
+        storage/
+        sync/
+        operations/
+        catalog/
+        balances/
+        recipients/
+        assets/
+        events/
+        validation/
+        telemetry/
+    warehouse_ffi/
+      Cargo.toml
+      src/
+        lib.rs
+        ffi_types.rs
+        facade.rs
+        error_mapping.rs
+      uniffi.toml
+      warehouse_core.udl
+    warehouse_cli/
+      Cargo.toml
+      src/
+        main.rs
+  migrations/
+    sqlite/
+      0001_initial.sql
+      0002_outbox.sql
+      0003_sync_metadata.sql
+  tests/
+    fixtures/
+    integration/
+    contract/
+  examples/
+    desktop_csharp/
+    android_kotlin/
+  .github/
+    workflows/
+      ci.yml
+```
+
+## 4. Базовые технологические решения
+
+### 4.1. Язык и runtime
+
+- Rust stable.
+- Async runtime: `tokio`.
+- HTTP: `reqwest`.
+- JSON: `serde`, `serde_json`.
+- SQLite: `sqlx` или `rusqlite`.
+- UUID: `uuid`.
+- Time: `time` или `chrono`, выбрать один стандарт и не смешивать.
+- Errors: `thiserror` внутри core, FFI-safe error envelope наружу.
+- Logging/tracing: `tracing`.
+- CLI: `clap`.
+
+### 4.2. SQLite выбор
+
+Рекомендуемый вариант: `sqlx` с SQLite.
+
+Причины:
+
+- async-friendly;
+- compile-time query checking при подготовленной схеме;
+- удобно для репозиториев;
+- единый подход с `tokio` и HTTP sync.
+
+Альтернатива: `rusqlite`, если сборка под Android окажется проще или нужно максимально предсказуемое embedded-поведение.
+
+Решение фиксируется в фазе 1 ADR.
+
+### 4.3. FFI выбор
+
+Рекомендуемый порядок:
+
+1. UniFFI для Kotlin и потенциально C# wrappers.
+2. Если C# через UniFFI неудобен — отдельный `extern "C"` слой для WPF.
+3. Не смешивать внутренние Rust domain DTO и FFI DTO напрямую. FFI должен иметь стабильные простые структуры.
+
+### 4.4. Формат публичного API
+
+UI-клиенты должны работать через facade, например:
+
+```text
+CoreHandle
+  open(config)
+  close()
+  get_health()
+  login_with_user_token(...)
+  bootstrap_device(...)
+  sync_now(...)
+  get_sync_status()
+  list_sites(...)
+  list_catalog_items(...)
+  search_catalog(...)
+  create_operation_draft(...)
+  update_operation_draft(...)
+  submit_operation(...)
+  list_balances(...)
+  list_pending_acceptance(...)
+  list_conflicts(...)
+  resolve_conflict(...)
+```
+
+UI не должен вызывать низкоуровневые репозитории, SQL или HTTP-клиент напрямую.
+
+## 5. Глобальные требования к фазам
+
+Каждая фаза должна быть рассчитана так, чтобы отдельная модель с контекстом 128k могла:
+
+- прочитать документацию фазы;
+- изучить нужные файлы;
+- реализовать изменения;
+- написать тесты;
+- запустить проверки;
+- обновить документацию;
+- передать следующей фазе понятное состояние.
+
+Каждая фаза завершается:
+
+- unit-тестами;
+- integration-тестами, если есть БД/HTTP;
+- smoke-командой CLI, если фаза затрагивает runtime;
+- обновлением документации;
+- коротким phase report в `docs/phase_reports/PHASE_N.md`.
+
+## 6. Definition of Done для всего проекта
+
+Проект считается завершённым, когда выполнены условия:
+
+- workspace собирается командой `cargo build --workspace`;
+- все тесты проходят командой `cargo test --workspace`;
+- есть локальная SQLite БД с миграциями;
+- есть стабильный core facade;
+- есть FFI crate;
+- есть CLI smoke tool;
+- есть documented client API для WPF и Kotlin;
+- есть примеры вызова из C# и Kotlin;
+- есть документация по offline-first поведению;
+- есть документация по sync-протоколу;
+- есть документация по storage schema;
+- есть release checklist;
+- `WarehouseDesktop` и `WarehouseMobile` могут строить UI вокруг ядра без знания внутреннего SQL/HTTP/sync state machine.
+
+---
+
+# Фаза 0. Уточнение границ и фиксация ADR
+
+## Цель
+
+Зафиксировать, что `Warehouse_client_core` — общий offline-first runtime для `WarehouseDesktop` и `WarehouseMobile`, а `SyncServer` остаётся источником истины.
+
+## Объём работ
+
+1. Создать документы:
+   - `docs/ARCHITECTURE.md`;
+   - `docs/OFFLINE_FIRST.md`;
+   - `docs/SYNC_PROTOCOL.md`;
+   - `docs/API_FOR_CLIENTS.md`;
+   - `docs/phase_reports/PHASE_0.md`.
+2. Описать целевую архитектуру.
+3. Описать границы ответственности между core, WPF и Kotlin.
+4. Описать, что `WarehouseAIWorkstation` не входит в scope.
+5. Описать основные user flows:
+   - первый запуск;
+   - bootstrap;
+   - login/auth context;
+   - первичная синхронизация;
+   - offline создание операции;
+   - push операции;
+   - конфликт;
+   - recovery после ошибки.
+6. Зафиксировать список endpoint groups, которые core должен поддерживать:
+   - `/health`;
+   - `/auth/context`;
+   - `/auth/sites`;
+   - `/catalog/items`;
+   - `/catalog/categories`;
+   - `/catalog/units`;
+   - `/catalog/sites`;
+   - `/operations`;
+   - `/balances`;
+   - `/pending-acceptance`;
+   - `/lost-assets`;
+   - `/issued-assets`;
+   - `/recipients`;
+   - `/ping`;
+   - `/push`;
+   - `/pull`;
+   - `/bootstrap/sync`.
+
+## Ограничения
+
+- Не писать production-код ядра в этой фазе, кроме минимальных заготовок, если они нужны для документации.
+- Не менять `SyncServer`.
+- Не менять `WarehouseAIWorkstation`.
+
+## Тестирование фазы
+
+- Проверить документацию на непротиворечивость текущим ADR проекта.
+- Проверить, что каждый flow имеет вход, выход, offline-поведение и error state.
+- Проверить, что нет утверждения о Rust core как источнике истины.
+
+## Definition of Done
+
+- Есть архитектурные документы.
+- Есть список endpoint groups.
+- Есть список фаз.
+- Есть phase report.
+- Следующая фаза может создать Rust workspace без дополнительных архитектурных вопросов.
+
+---
+
+# Фаза 1. Инициализация Rust workspace и базовая инфраструктура
+
+## Цель
+
+Создать минимально компилируемый Rust workspace с основными crates, CI-скриптами и технической документацией.
+
+## Объём работ
+
+1. Создать `Cargo.toml` workspace.
+2. Создать crates:
+   - `crates/warehouse_core`;
+   - `crates/warehouse_ffi`;
+   - `crates/warehouse_cli`.
+3. Настроить зависимости:
+   - `serde`;
+   - `serde_json`;
+   - `thiserror`;
+   - `tracing`;
+   - `uuid`;
+   - `tokio`;
+   - `reqwest`;
+   - SQLite crate;
+   - `clap` для CLI.
+4. Создать базовые модули:
+   - `error`;
+   - `config`;
+   - `ids`;
+   - `time`;
+   - `domain`;
+   - `storage`;
+   - `sync`;
+   - `operations`.
+5. Создать `CoreConfig`:
+   - `server_base_url`;
+   - `database_path`;
+   - `client_name`;
+   - `client_version`;
+   - `device_id`;
+   - `site_id` optional;
+   - timeout settings;
+   - retry settings.
+6. Создать `CoreError` и `CoreResult<T>`.
+7. Создать minimal CLI:
+   - `warehouse-cli --version`;
+   - `warehouse-cli health-local`.
+8. Создать `.gitignore` для Rust артефактов.
+9. Создать `README.md` с быстрым стартом.
+
+## Архитектурные решения фазы
+
+- Выбрать SQLite crate.
+- Выбрать time crate.
+- Выбрать стратегию FFI.
+- Зафиксировать решения в `docs/ARCHITECTURE.md`.
+
+## Тестирование фазы
+
+Команды:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --workspace
+cargo run -p warehouse_cli -- --version
+cargo run -p warehouse_cli -- health-local
+```
+
+## Definition of Done
+
+- Workspace компилируется.
+- CLI запускается.
+- Есть базовые unit-тесты для config/error.
+- Документация обновлена.
+- Phase report создан.
+
+---
+
+# Фаза 2. Доменная модель и DTO контракты
+
+## Цель
+
+Создать внутреннюю доменную модель core и публичные DTO, совместимые с текущими API `SyncServer`.
+
+## Объём работ
+
+1. Создать domain modules:
+   - `domain/auth.rs`;
+   - `domain/site.rs`;
+   - `domain/catalog.rs`;
+   - `domain/operation.rs`;
+   - `domain/balance.rs`;
+   - `domain/recipient.rs`;
+   - `domain/assets.rs`;
+   - `domain/sync.rs`;
+   - `domain/pagination.rs`.
+2. Описать модели:
+   - `UserContext`;
+   - `Role`;
+   - `PermissionSummary`;
+   - `Site`;
+   - `Category`;
+   - `Unit`;
+   - `Item`;
+   - `InventorySubject`;
+   - `Operation`;
+   - `OperationLine`;
+   - `OperationType`;
+   - `OperationStatus`;
+   - `BalanceRow`;
+   - `Recipient`;
+   - `PendingAcceptanceRow`;
+   - `LostAssetRow`;
+   - `IssuedAssetRow`;
+   - `SyncStatus`;
+   - `ConflictRecord`.
+3. Разделить модели на:
+   - server DTO;
+   - local entities;
+   - public UI DTO;
+   - FFI DTO.
+4. Создать mapping layer:
+   - server DTO -> domain;
+   - domain -> local entity;
+   - domain -> public DTO.
+5. Реализовать enum serialization policy:
+   - unknown enum value не должен падать весь sync;
+   - неизвестные значения должны мапиться в `Unknown(String)` там, где это безопасно.
+6. Описать nullability и default policy.
+7. Добавить snapshot fixtures с примерами JSON ответов `SyncServer`.
+
+## Особое внимание
+
+- Не тащить SQL-схему `SyncServer` напрямую в core.
+- Не смешивать `OperationResponse` и локальный `OperationDraft`.
+- Локальные draft-модели должны быть отдельными.
+- Остатки — read model, не primary editable state.
+
+## Тестирование фазы
+
+1. Unit-тесты сериализации и десериализации JSON.
+2. Fixture-тесты для endpoint DTO:
+   - auth context;
+   - catalog items;
+   - categories;
+   - units;
+   - sites;
+   - operations list;
+   - balances list;
+   - asset registers.
+3. Mapping-тесты server DTO -> domain -> public DTO.
+4. Negative-тесты unknown enum values.
+
+Команды:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test -p warehouse_core domain
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Все основные DTO существуют.
+- Все DTO покрыты serialization tests.
+- Есть fixtures.
+- Нет зависимости UI от server DTO.
+- Документация `docs/API_FOR_CLIENTS.md` содержит первую версию публичных DTO.
+
+---
+
+# Фаза 3. Локальное SQLite-хранилище и миграции
+
+## Цель
+
+Создать устойчивую локальную БД для кэша, outbox, черновиков, sync metadata и ошибок.
+
+## Объём работ
+
+1. Создать migration runner.
+2. Создать таблицы:
+   - `schema_migrations`;
+   - `core_metadata`;
+   - `auth_context`;
+   - `sites`;
+   - `categories`;
+   - `units`;
+   - `items`;
+   - `inventory_subjects`;
+   - `balances`;
+   - `operations_cache`;
+   - `operation_lines_cache`;
+   - `operation_drafts`;
+   - `operation_draft_lines`;
+   - `recipients`;
+   - `pending_acceptance`;
+   - `lost_assets`;
+   - `issued_assets`;
+   - `outbox`;
+   - `sync_cursors`;
+   - `sync_runs`;
+   - `conflicts`;
+   - `error_log`.
+3. Создать repository layer:
+   - `AuthRepository`;
+   - `CatalogRepository`;
+   - `OperationDraftRepository`;
+   - `OperationCacheRepository`;
+   - `BalanceRepository`;
+   - `RecipientRepository`;
+   - `AssetRepository`;
+   - `OutboxRepository`;
+   - `SyncMetadataRepository`;
+   - `ConflictRepository`.
+4. Реализовать транзакционный helper:
+   - begin;
+   - commit;
+   - rollback;
+   - with_transaction.
+5. Реализовать database open modes:
+   - create if missing;
+   - migrate on open;
+   - readonly diagnostics;
+   - reset local cache, но не secrets.
+6. Добавить индексы для частых запросов:
+   - item name/sku search;
+   - category parent_id;
+   - operation status;
+   - operation site_id;
+   - outbox status;
+   - sync cursor key;
+   - conflict status.
+
+## Локальная схема outbox
+
+Минимальные поля:
+
+- `id` local UUID;
+- `aggregate_type`;
+- `aggregate_id`;
+- `event_type`;
+- `payload_json`;
+- `idempotency_key`;
+- `status`;
+- `attempt_count`;
+- `next_attempt_at`;
+- `last_error_code`;
+- `last_error_message`;
+- `created_at`;
+- `updated_at`.
+
+## Тестирование фазы
+
+1. Migration tests на пустой БД.
+2. Migration idempotency tests.
+3. Repository CRUD tests.
+4. Transaction rollback tests.
+5. Search/query tests.
+6. Corrupted DB open negative test.
+7. CLI smoke:
+   - создать БД;
+   - применить миграции;
+   - вывести schema version.
+
+Команды:
+
+```text
+cargo test -p warehouse_core storage
+cargo run -p warehouse_cli -- db init --path ./tmp/test.sqlite
+cargo run -p warehouse_cli -- db info --path ./tmp/test.sqlite
+cargo test --workspace
+```
+
+## Definition of Done
+
+- БД создаётся и мигрирует.
+- Репозитории покрыты тестами.
+- Есть `docs/STORAGE_SCHEMA.md`.
+- CLI умеет показать версию схемы.
+- Нет прямого доступа UI к SQL.
+
+---
+
+# Фаза 4. HTTP-клиент SyncServer и contract fixtures
+
+## Цель
+
+Реализовать typed HTTP client для чтения и записи через API `SyncServer` без offline orchestration.
+
+## Объём работ
+
+1. Создать `SyncServerClient`.
+2. Реализовать config:
+   - base URL;
+   - user token;
+   - device token;
+   - client version;
+   - timeouts;
+   - retry только на transport-level, без бизнес-повторов.
+3. Реализовать endpoints:
+   - `GET /health`;
+   - `GET /ready`;
+   - `GET /auth/context`;
+   - `GET /auth/sites`;
+   - `GET /catalog/items`;
+   - `GET /catalog/categories`;
+   - `GET /catalog/units`;
+   - `GET /catalog/sites`;
+   - `GET /operations`;
+   - `GET /operations/{operation_id}`;
+   - `POST /operations`;
+   - `PATCH /operations/{operation_id}`;
+   - `POST /operations/{operation_id}/submit`;
+   - `POST /operations/{operation_id}/cancel`;
+   - `POST /operations/{operation_id}/accept-lines`;
+   - `GET /balances`;
+   - `GET /balances/by-site`;
+   - `GET /pending-acceptance`;
+   - `GET /lost-assets`;
+   - `POST /lost-assets/{operation_line_id}/resolve`;
+   - `GET /issued-assets`;
+   - `GET /recipients`;
+   - `POST /recipients`;
+   - `POST /ping`;
+   - `POST /push`;
+   - `POST /pull`;
+   - `POST /bootstrap/sync`.
+4. Реализовать error mapping:
+   - network;
+   - timeout;
+   - unauthorized;
+   - forbidden;
+   - not found;
+   - validation error;
+   - conflict;
+   - server error;
+   - protocol error;
+   - invalid JSON.
+5. Создать mock server tests.
+6. Создать contract fixture tests на сохранённых JSON.
+
+## Ограничения
+
+- Эта фаза не должна реализовывать автоматический sync engine.
+- Только typed API client и проверка контрактов.
+
+## Тестирование фазы
+
+1. Mock HTTP tests для каждого endpoint group.
+2. Header tests:
+   - `X-User-Token`;
+   - `X-Device-Token`;
+   - `X-Device-Id`;
+   - `X-Site-Id`;
+   - `X-Client-Version`.
+3. Error mapping tests.
+4. Timeout tests.
+5. CLI smoke:
+   - `health-remote`;
+   - `auth-context` with token;
+   - `catalog pull-once`.
+
+Команды:
+
+```text
+cargo test -p warehouse_core sync_client
+cargo run -p warehouse_cli -- health-remote --server http://127.0.0.1:8000
+cargo test --workspace
+```
+
+## Definition of Done
+
+- HTTP client покрывает нужные endpoint groups.
+- Headers выставляются корректно.
+- Ошибки классифицируются стабильно.
+- Есть `docs/SYNC_PROTOCOL.md` с описанием API-клиента.
+
+---
+
+# Фаза 5. Bootstrap, auth context и локальная сессия
+
+## Цель
+
+Реализовать первый запуск, регистрацию/привязку устройства, загрузку auth context и безопасное локальное состояние сессии.
+
+## Объём работ
+
+1. Создать `AuthService`.
+2. Реализовать сценарии:
+   - open existing local profile;
+   - bootstrap by root token;
+   - set user token;
+   - load auth context;
+   - load available sites;
+   - select active site;
+   - clear session;
+   - logout local only.
+3. Сохранить локально:
+   - user id;
+   - username;
+   - role;
+   - default site;
+   - available sites;
+   - permissions summary;
+   - device id;
+   - device registered flag;
+   - server time from last auth.
+4. Секреты:
+   - в core не делать платформенную магию DPAPI/Keystore на первой итерации;
+   - принимать tokens через facade;
+   - хранить token policy в документации;
+   - предоставить interface `SecretProvider` или adapter point для будущего secure storage.
+5. Добавить facade methods:
+   - `bootstrap_sync`;
+   - `set_user_token`;
+   - `set_device_token`;
+   - `refresh_auth_context`;
+   - `get_auth_context`;
+   - `list_available_sites`;
+   - `set_active_site`;
+   - `logout_local`.
+
+## Тестирование фазы
+
+1. Unit-тесты AuthService.
+2. Repository tests для auth_context.
+3. Mock server tests для bootstrap/auth context.
+4. Permission mapping tests.
+5. CLI smoke:
+   - bootstrap;
+   - auth context;
+   - select site;
+   - show session.
+
+Команды:
+
+```text
+cargo test -p warehouse_core auth
+cargo run -p warehouse_cli -- session show --db ./tmp/test.sqlite
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Core умеет хранить локальный auth context.
+- Core умеет выбирать active site.
+- UI может получить текущую сессию без HTTP-вызова.
+- Документация описывает token ownership для WPF/Kotlin.
+
+---
+
+# Фаза 6. Pull-синхронизация справочников и read models
+
+## Цель
+
+Реализовать загрузку серверных read models в локальный кэш.
+
+## Объём работ
+
+1. Создать `PullSyncService`.
+2. Реализовать pull для:
+   - sites;
+   - categories;
+   - units;
+   - items;
+   - balances;
+   - operations list;
+   - recipients;
+   - pending acceptance;
+   - lost assets;
+   - issued assets.
+3. Реализовать cursor strategy:
+   - `updated_after` для endpoint, где он есть;
+   - page/page_size scan для endpoint, где cursor отсутствует;
+   - last_successful_sync timestamp;
+   - server_time tracking;
+   - per-resource cursor.
+4. Реализовать local upsert policy:
+   - insert new;
+   - update existing;
+   - mark inactive/deleted when server sends flags;
+   - preserve local drafts.
+5. Реализовать progress reporting:
+   - resource name;
+   - page/current count;
+   - started_at;
+   - finished_at;
+   - error.
+6. Добавить facade:
+   - `sync_pull_all`;
+   - `sync_pull_catalog`;
+   - `sync_pull_balances`;
+   - `sync_pull_operations`;
+   - `get_last_sync_status`.
+7. Добавить queries для UI:
+   - list/search items;
+   - category tree local;
+   - list balances;
+   - list cached operations;
+   - list recipients;
+   - list asset registers.
+
+## Offline behavior
+
+Если сети нет:
+
+- локальные query продолжают работать;
+- sync status показывает network error;
+- existing cache не очищается;
+- UI получает понятную ошибку и stale timestamp.
+
+## Тестирование фазы
+
+1. Mock paginated API tests.
+2. Incremental sync tests.
+3. Upsert tests.
+4. Deleted/inactive item tests.
+5. Offline network failure tests.
+6. Cursor persistence tests.
+7. CLI smoke:
+   - pull catalog;
+   - search item offline;
+   - show sync status.
+
+Команды:
+
+```text
+cargo test -p warehouse_core pull_sync
+cargo run -p warehouse_cli -- sync pull-catalog --db ./tmp/test.sqlite
+cargo run -p warehouse_cli -- catalog search --db ./tmp/test.sqlite --query test
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Core умеет заполнить локальный read cache.
+- UI может читать каталог/остатки/регистры без сети.
+- Sync status хранится локально.
+- Есть документация по stale data policy.
+
+---
+
+# Фаза 7. Локальные черновики операций
+
+## Цель
+
+Реализовать offline создание и редактирование черновиков операций без отправки на сервер.
+
+## Объём работ
+
+1. Создать `OperationDraftService`.
+2. Реализовать локальные операции:
+   - create draft;
+   - update header;
+   - add line;
+   - update line quantity;
+   - remove line;
+   - validate draft;
+   - mark ready for submit;
+   - delete local draft;
+   - duplicate draft.
+3. Поддержать типы операций, которые реально нужны UI:
+   - receipt/income;
+   - move;
+   - issue;
+   - write-off/lost flow, если соответствует server API;
+   - acceptance flow отдельно, если требуется.
+4. Реализовать локальные идентификаторы:
+   - `local_operation_id`;
+   - `client_operation_id` for idempotency;
+   - optional `server_operation_id` after sync.
+5. Реализовать line references:
+   - item id;
+   - temporary item placeholder, если offline временные позиции нужны;
+   - quantity;
+   - source/destination site;
+   - recipient;
+   - note.
+6. Реализовать validation:
+   - required site;
+   - required operation type;
+   - required lines;
+   - positive quantities;
+   - source/destination rules;
+   - user permissions from cached context;
+   - stale catalog warning;
+   - balance warning, но не финальный запрет там, где сервер должен решать.
+7. Facade для UI:
+   - `create_operation_draft`;
+   - `get_operation_draft`;
+   - `list_operation_drafts`;
+   - `update_operation_draft_header`;
+   - `add_operation_draft_line`;
+   - `update_operation_draft_line`;
+   - `remove_operation_draft_line`;
+   - `validate_operation_draft`;
+   - `delete_operation_draft`.
+
+## Тестирование фазы
+
+1. Unit-тесты draft lifecycle.
+2. Validation tests для каждого operation type.
+3. Permission tests.
+4. Repository persistence tests.
+5. Offline tests без HTTP клиента.
+6. CLI smoke:
+   - create draft;
+   - add line;
+   - validate;
+   - list drafts.
+
+Команды:
+
+```text
+cargo test -p warehouse_core operation_drafts
+cargo run -p warehouse_cli -- draft create --db ./tmp/test.sqlite --type receipt
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Черновики полностью работают offline.
+- Черновики сохраняются после restart.
+- UI получает validation result с errors/warnings.
+- Никакая операция не отправляется на сервер автоматически без явного submit/enqueue.
+
+---
+
+# Фаза 8. Outbox и push операций
+
+## Цель
+
+Реализовать постановку готовых черновиков в очередь и надёжную отправку на `SyncServer`.
+
+## Объём работ
+
+1. Создать `OutboxService`.
+2. Реализовать статусы outbox:
+   - `queued`;
+   - `syncing`;
+   - `synced`;
+   - `failed_retryable`;
+   - `failed_final`;
+   - `conflict`;
+   - `canceled_local`.
+3. Реализовать enqueue:
+   - draft -> outbox event;
+   - payload snapshot;
+   - idempotency key;
+   - validation before enqueue.
+4. Реализовать push через primary operations API:
+   - `POST /operations`;
+   - optional `PATCH /operations/{id}`;
+   - `POST /operations/{id}/submit`.
+5. Отдельно оценить device sync API:
+   - `/push` events может быть использован только если payload соответствует серверному sync-протоколу;
+   - если server event protocol недостаточно описан, первая production-версия должна push через `/operations` API.
+6. Реализовать retry policy:
+   - exponential backoff;
+   - max attempts;
+   - no retry for validation/forbidden/not found unless classified conflict;
+   - retry for network/timeout/5xx.
+7. Реализовать status update:
+   - local draft linked to server operation id;
+   - local operation cache updated;
+   - outbox marked synced;
+   - sync run recorded.
+8. Реализовать conflict creation:
+   - validation rejected by server;
+   - permission changed;
+   - referenced item missing/inactive;
+   - site access changed;
+   - balance conflict;
+   - duplicate/idempotency mismatch.
+9. Facade для UI:
+   - `enqueue_operation_draft`;
+   - `sync_push_pending`;
+   - `get_outbox_summary`;
+   - `list_outbox_items`;
+   - `retry_outbox_item`;
+   - `cancel_outbox_item`.
+
+## Тестирование фазы
+
+1. Enqueue tests.
+2. Push success tests через mock server.
+3. Retryable failure tests.
+4. Final failure tests.
+5. Conflict classification tests.
+6. Idempotency tests.
+7. Restart recovery tests: item был `syncing`, приложение упало, следующий запуск возвращает в retryable.
+8. CLI smoke:
+   - enqueue draft;
+   - push pending;
+   - show outbox.
+
+Команды:
+
+```text
+cargo test -p warehouse_core outbox
+cargo test -p warehouse_core push_sync
+cargo run -p warehouse_cli -- outbox list --db ./tmp/test.sqlite
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Core умеет отправлять операции.
+- Ошибки не теряют локальные данные.
+- UI видит понятный статус очереди.
+- После успешного push локальная операция связана с server id.
+
+---
+
+# Фаза 9. Pull/Ping/Push orchestration и общий sync engine
+
+## Цель
+
+Собрать pull, push, ping и status reporting в единый управляемый sync engine.
+
+## Объём работ
+
+1. Создать `SyncEngine`.
+2. Реализовать sync modes:
+   - `pull_only`;
+   - `push_only`;
+   - `full_sync`;
+   - `foreground_sync`;
+   - `background_sync`;
+   - `diagnostic_ping`.
+3. Реализовать порядок full sync:
+   - health/ready optional;
+   - ping optional if device token exists;
+   - refresh auth context;
+   - push pending outbox;
+   - pull catalog/sites;
+   - pull operations/balances/registers;
+   - update sync status.
+4. Реализовать locking:
+   - только один sync run одновременно;
+   - второй вызов получает current status или queue request;
+   - защита от параллельного push одного outbox item.
+5. Реализовать cancellation token.
+6. Реализовать progress callback abstraction для UI/FFI.
+7. Реализовать sync summary:
+   - started_at;
+   - finished_at;
+   - resources pulled;
+   - outbox pushed;
+   - conflicts created;
+   - network status;
+   - stale status.
+8. Реализовать backoff from `/ping` response, если endpoint используется.
+
+## Тестирование фазы
+
+1. Full sync order tests.
+2. Locking tests.
+3. Cancellation tests.
+4. Mixed failure tests: push failed, pull still allowed или остановлен согласно policy.
+5. Progress events tests.
+6. Background-safe tests.
+7. CLI smoke:
+   - full sync;
+   - show status;
+   - simulate offline.
+
+Команды:
+
+```text
+cargo test -p warehouse_core sync_engine
+cargo run -p warehouse_cli -- sync now --db ./tmp/test.sqlite
+cargo run -p warehouse_cli -- sync status --db ./tmp/test.sqlite
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Есть единая точка синхронизации.
+- UI может запускать sync и получать progress/status.
+- Параллельные sync-запуски безопасны.
+- Документация описывает sync order и failure policy.
+
+---
+
+# Фаза 10. Конфликты, восстановление и UX-oriented error model
+
+## Цель
+
+Сделать ошибки и конфликты пригодными для UI, чтобы WPF/Kotlin могли строить понятные экраны решения проблем.
+
+## Объём работ
+
+1. Создать `ConflictService`.
+2. Типы конфликтов:
+   - `PermissionChanged`;
+   - `SiteAccessChanged`;
+   - `CatalogItemMissing`;
+   - `CatalogItemInactive`;
+   - `BalanceChanged`;
+   - `ServerValidationRejected`;
+   - `DuplicateOperation`;
+   - `ProtocolMismatch`;
+   - `UnknownServerRejection`.
+3. Для каждого конфликта хранить:
+   - local entity reference;
+   - outbox item id;
+   - server status code;
+   - server error body snapshot;
+   - user-facing title key;
+   - user-facing message key;
+   - technical details;
+   - recommended actions;
+   - created_at;
+   - resolved_at.
+4. Реализовать actions:
+   - retry after pull;
+   - edit draft copy;
+   - cancel local item;
+   - mark acknowledged;
+   - export diagnostics.
+5. Реализовать `CoreErrorEnvelope`:
+   - code;
+   - severity;
+   - retryable;
+   - user_message_key;
+   - technical_message;
+   - correlation_id;
+   - details JSON.
+6. Документировать error codes для UI.
+
+## Тестирование фазы
+
+1. Conflict creation tests.
+2. Conflict resolve tests.
+3. Error envelope mapping tests.
+4. UI-facing serialization tests.
+5. Diagnostics export tests.
+6. CLI smoke:
+   - list conflicts;
+   - show conflict;
+   - acknowledge conflict.
+
+Команды:
+
+```text
+cargo test -p warehouse_core conflicts
+cargo run -p warehouse_cli -- conflicts list --db ./tmp/test.sqlite
+cargo test --workspace
+```
+
+## Definition of Done
+
+- UI не получает сырые Rust/internal ошибки.
+- Все ошибки имеют стабильный code.
+- Конфликты сохраняются и доступны после restart.
+- Есть документация по error model.
+
+---
+
+# Фаза 11. Facade API для UI-клиентов
+
+## Цель
+
+Собрать стабильный публичный API ядра, вокруг которого WPF и Kotlin смогут строить UI.
+
+## Объём работ
+
+1. Создать `CoreFacade`.
+2. Разделить API на группы:
+   - lifecycle;
+   - auth/session;
+   - sync;
+   - catalog;
+   - balances;
+   - operations drafts;
+   - outbox;
+   - conflicts;
+   - diagnostics.
+3. Методы lifecycle:
+   - `core_open`;
+   - `core_close`;
+   - `core_get_version`;
+   - `core_get_local_health`.
+4. Методы auth/session:
+   - `core_bootstrap_sync`;
+   - `core_set_user_token`;
+   - `core_set_device_token`;
+   - `core_refresh_auth_context`;
+   - `core_get_auth_context`;
+   - `core_set_active_site`;
+   - `core_logout_local`.
+5. Методы sync:
+   - `core_sync_now`;
+   - `core_sync_pull_catalog`;
+   - `core_sync_push_pending`;
+   - `core_get_sync_status`;
+   - `core_cancel_sync`.
+6. Методы catalog:
+   - `core_search_items`;
+   - `core_get_item`;
+   - `core_list_categories`;
+   - `core_get_category_tree`;
+   - `core_list_units`.
+7. Методы balances/assets:
+   - `core_list_balances`;
+   - `core_list_pending_acceptance`;
+   - `core_list_lost_assets`;
+   - `core_list_issued_assets`.
+8. Методы drafts/outbox:
+   - `core_create_operation_draft`;
+   - `core_update_operation_draft`;
+   - `core_add_operation_line`;
+   - `core_validate_operation_draft`;
+   - `core_enqueue_operation_draft`;
+   - `core_get_outbox_summary`.
+9. Методы conflicts:
+   - `core_list_conflicts`;
+   - `core_get_conflict`;
+   - `core_acknowledge_conflict`;
+   - `core_retry_conflict`.
+10. Методы diagnostics:
+   - `core_export_diagnostics`;
+   - `core_get_storage_info`;
+   - `core_get_last_errors`.
+11. Все методы должны возвращать FFI-safe result envelope.
+12. Добавить pagination objects для list methods.
+
+## API design rules
+
+- Никаких borrowed references через FFI boundary.
+- Никаких Rust-specific generic types в публичном FFI.
+- Никаких panic наружу.
+- Все ошибки превращаются в stable error envelope.
+- Все даты в ISO 8601 UTC string или epoch millis, выбрать одно и документировать.
+- Все ids строковые, если это упрощает FFI.
+
+## Тестирование фазы
+
+1. Facade unit tests.
+2. Facade integration tests с временной БД.
+3. Error envelope tests.
+4. Pagination tests.
+5. Thread-safety tests.
+6. CLI smoke через facade only.
+
+Команды:
+
+```text
+cargo test -p warehouse_core facade
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Весь UI-facing API проходит через facade.
+- Низкоуровневые сервисы не нужны UI.
+- `docs/API_FOR_CLIENTS.md` описывает все методы, входы, выходы и ошибки.
+
+---
+
+# Фаза 12. FFI bindings для WPF и Kotlin
+
+## Цель
+
+Сделать core реально подключаемым из `WarehouseDesktop` и `WarehouseMobile`.
+
+## Объём работ
+
+1. Создать `warehouse_ffi` crate.
+2. Выбрать окончательный FFI путь:
+   - UniFFI для Kotlin;
+   - UniFFI или C ABI для C#;
+   - при необходимости два adapter слоя над одним facade.
+3. Описать UDL или FFI declarations.
+4. Экспортировать lifecycle API.
+5. Экспортировать session API.
+6. Экспортировать sync API.
+7. Экспортировать catalog query API.
+8. Экспортировать operation draft API.
+9. Экспортировать outbox/conflict API.
+10. Реализовать memory management:
+    - owned strings;
+    - byte buffers;
+    - free functions;
+    - handle lifecycle.
+11. Реализовать callback/progress strategy:
+    - polling status как MVP;
+    - callbacks только если они безопасны для обоих клиентов.
+12. Создать examples:
+    - `examples/desktop_csharp`;
+    - `examples/android_kotlin`.
+13. Документировать сборку:
+    - Windows x64;
+    - Android arm64-v8a;
+    - Android x86_64 emulator.
+
+## Тестирование фазы
+
+1. Rust FFI tests.
+2. Generated bindings compile tests, если возможно.
+3. C# smoke project:
+   - open core;
+   - get version;
+   - create local DB;
+   - list items.
+4. Kotlin smoke project:
+   - load library;
+   - open core;
+   - get version;
+   - read sync status.
+5. Memory/leak sanity tests.
+
+Команды:
+
+```text
+cargo build -p warehouse_ffi --release
+cargo test -p warehouse_ffi
+cargo test --workspace
+```
+
+## Definition of Done
+
+- Есть native library artifact.
+- Есть generated или handwritten bindings.
+- Есть минимальные примеры для C# и Kotlin.
+- Есть `docs/FFI_GUIDE.md`.
+
+---
+
+# Фаза 13. CLI, diagnostics и developer tooling
+
+## Цель
+
+Сделать CLI полноценным инструментом для проверки core без UI и для диагностики у разработчиков UI.
+
+## Объём работ
+
+1. Расширить `warehouse_cli` командами:
+   - `db init`;
+   - `db info`;
+   - `db migrate`;
+   - `session show`;
+   - `session set-token`;
+   - `sync now`;
+   - `sync pull-catalog`;
+   - `sync push-pending`;
+   - `sync status`;
+   - `catalog search`;
+   - `draft create`;
+   - `draft add-line`;
+   - `draft validate`;
+   - `draft enqueue`;
+   - `outbox list`;
+   - `conflicts list`;
+   - `diagnostics export`.
+2. Добавить machine-readable JSON output option.
+3. Добавить human-readable table output option.
+4. Добавить redaction секретов в diagnostics.
+5. Добавить debug logging через env/config.
+
+## Тестирование фазы
+
+1. CLI command tests.
+2. Golden output tests для JSON.
+3. Redaction tests.
+4. End-to-end local scenario:
+   - init DB;
+   - set token;
+   - pull catalog from mock;
+   - create draft;
+   - enqueue;
+   - push to mock;
+   - verify outbox synced.
+
+Команды:
+
+```text
+cargo test -p warehouse_cli
+cargo run -p warehouse_cli -- db init --path ./tmp/dev.sqlite
+cargo run -p warehouse_cli -- diagnostics export --db ./tmp/dev.sqlite --out ./tmp/diag.zip
+cargo test --workspace
+```
+
+## Definition of Done
+
+- CLI покрывает основные сценарии core.
+- UI-разработчик может воспроизвести проблему без запуска WPF/Android.
+- Diagnostics export не содержит секретов.
+
+---
+
+# Фаза 14. Интеграционные тесты с реальным или тестовым SyncServer
+
+## Цель
+
+Проверить core не только на mock server, но и на реальном API-контракте `SyncServer`.
+
+## Объём работ
+
+1. Создать integration test profile.
+2. Поддержать env variables:
+   - `WAREHOUSE_TEST_SERVER_URL`;
+   - `WAREHOUSE_TEST_USER_TOKEN`;
+   - `WAREHOUSE_TEST_DEVICE_TOKEN`;
+   - `WAREHOUSE_TEST_SITE_ID`;
+   - `WAREHOUSE_TEST_ENABLE_MUTATIONS`.
+3. Тесты read-only:
+   - health;
+   - auth context;
+   - sites;
+   - catalog pull;
+   - balances pull;
+   - recipients pull.
+4. Тесты mutation-gated:
+   - create operation draft locally;
+   - push operation to test server;
+   - submit operation;
+   - pull operation back;
+   - verify local cache.
+5. Добавить skip policy, если env не задан.
+6. Добавить отчёт integration run.
+
+## Тестирование фазы
+
+Команды:
+
+```text
+cargo test --workspace
+cargo test --test syncserver_contract -- --ignored
+cargo run -p warehouse_cli -- health-remote --server %WAREHOUSE_TEST_SERVER_URL%
+```
+
+## Definition of Done
+
+- Mock tests остаются быстрыми и обязательными.
+- Real server tests доступны opt-in.
+- Документация объясняет подготовку тестового сервера и токенов.
+
+---
+
+# Фаза 15. Packaging и сборка артефактов
+
+## Цель
+
+Подготовить модуль к сборке и поставке в desktop/mobile проекты.
+
+## Объём работ
+
+1. Настроить release profiles.
+2. Настроить build scripts для Windows:
+   - x86_64-pc-windows-msvc.
+3. Настроить build scripts для Android:
+   - aarch64-linux-android;
+   - x86_64-linux-android.
+4. Подготовить artifacts layout:
+   - native library;
+   - generated bindings;
+   - headers, если C ABI;
+   - version file;
+   - checksum file;
+   - documentation bundle.
+5. Настроить versioning:
+   - core semantic version;
+   - protocol version compatibility;
+   - storage schema version;
+   - minimum SyncServer API version.
+6. Добавить release checklist.
+7. Добавить CI workflow:
+   - fmt;
+   - clippy;
+   - test;
+   - build Windows;
+   - build Android;
+   - package docs.
+
+## Тестирование фазы
+
+1. Clean build from scratch.
+2. Release build Windows.
+3. Android target build.
+4. Artifact smoke:
+   - C# example loads artifact;
+   - Kotlin example loads artifact;
+   - CLI uses same core version.
+5. Verify docs package includes API guide.
+
+Команды:
+
+```text
+cargo clean
+cargo build --workspace --release
+cargo test --workspace --release
+cargo build -p warehouse_ffi --release
+```
+
+## Definition of Done
+
+- Есть воспроизводимые release artifacts.
+- Есть версия и checksums.
+- Есть инструкция подключения для WPF и Kotlin.
+- CI или локальный script собирает всё одной командой.
+
+---
+
+# Фаза 16. Клиентская документация для UI-команд
+
+## Цель
+
+Сделать документацию, по которой отдельные команды смогут писать UI вокруг core без погружения в Rust internals.
+
+## Объём работ
+
+1. Завершить `docs/API_FOR_CLIENTS.md`:
+   - lifecycle;
+   - auth;
+   - sync;
+   - catalog;
+   - drafts;
+   - outbox;
+   - conflicts;
+   - diagnostics;
+   - DTO reference;
+   - error codes.
+2. Завершить `docs/FFI_GUIDE.md`:
+   - установка артефактов;
+   - C# example;
+   - Kotlin example;
+   - threading rules;
+   - memory ownership;
+   - callbacks/polling;
+   - platform-specific notes.
+3. Завершить `docs/OFFLINE_FIRST.md`:
+   - stale data;
+   - offline operations;
+   - sync statuses;
+   - conflict UX;
+   - retry UX;
+   - user messaging.
+4. Завершить `docs/SYNC_PROTOCOL.md`:
+   - endpoint groups;
+   - headers;
+   - cursors;
+   - push strategy;
+   - error mapping;
+   - compatibility policy.
+5. Завершить `docs/STORAGE_SCHEMA.md`:
+   - таблицы;
+   - индексы;
+   - migrations;
+   - reset policy;
+   - backup/diagnostics.
+6. Создать `docs/UI_INTEGRATION_RECIPES.md`:
+   - первый запуск;
+   - экран логина/bootstrap;
+   - экран синхронизации;
+   - каталог offline;
+   - создание операции offline;
+   - очередь отправки;
+   - конфликты;
+   - диагностика.
+7. Создать `docs/RELEASE_CHECKLIST.md`.
+8. Создать `docs/TROUBLESHOOTING.md`.
+
+## Тестирование фазы
+
+1. Documentation review по чеклисту.
+2. Проверить, что каждый публичный facade method описан.
+3. Проверить, что каждый error code описан.
+4. Проверить, что каждый DTO имеет поля и nullability.
+5. Пройти один UI recipe только через CLI и examples.
+
+## Definition of Done
+
+- UI-команда может начать интеграцию без чтения Rust-кода.
+- Есть отдельные инструкции для WPF и Android.
+- Есть troubleshooting.
+- Документация соответствует текущему API facade.
+
+---
+
+# Фаза 17. Финальная стабилизация и release candidate
+
+## Цель
+
+Довести модуль до состояния готового компилируемого ядра с тестами, артефактами и документацией.
+
+## Объём работ
+
+1. Провести полный audit публичного API.
+2. Убрать unstable/experimental методы или пометить явно.
+3. Проверить semver.
+4. Проверить storage migration compatibility.
+5. Проверить clean checkout build.
+6. Проверить Windows build.
+7. Проверить Android build.
+8. Проверить examples.
+9. Проверить docs.
+10. Подготовить release notes.
+11. Создать `CHANGELOG.md`.
+12. Создать final phase report.
+
+## Финальное тестирование
+
+Обязательные команды:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --workspace --release
+cargo test --workspace --release
+cargo run -p warehouse_cli -- --version
+```
+
+Дополнительно:
+
+```text
+cargo test --test syncserver_contract -- --ignored
+```
+
+Если настроена Android toolchain:
+
+```text
+cargo build -p warehouse_ffi --target aarch64-linux-android --release
+cargo build -p warehouse_ffi --target x86_64-linux-android --release
+```
+
+## Acceptance criteria
+
+- `Warehouse_client_core` компилируется.
+- Все обязательные тесты проходят.
+- Есть release artifacts для Windows и Android или документированный build path.
+- Есть документация для UI-клиентов.
+- Есть examples для C# и Kotlin.
+- Core можно использовать без знания внутренней архитектуры.
+- Offline-first сценарии покрыты тестами.
+- Ошибки и конфликты представлены в UI-friendly форме.
+
+## Definition of Done
+
+- Модуль готов к подключению в `WarehouseDesktop`.
+- Модуль готов к подключению в `WarehouseMobile`.
+- Документация достаточна для команд UI.
+- `WarehouseAIWorkstation` не затронут.
+
+---
+
+# 7. Сквозные требования качества
+
+## 7.1. Тесты
+
+Минимальный набор:
+
+- unit tests для domain и validation;
+- repository tests на SQLite;
+- migration tests;
+- mock HTTP client tests;
+- sync orchestration tests;
+- outbox retry tests;
+- conflict tests;
+- facade tests;
+- FFI smoke tests;
+- CLI smoke tests;
+- opt-in contract tests с `SyncServer`.
+
+## 7.2. Ошибки
+
+Все ошибки должны иметь:
+
+- stable code;
+- severity;
+- retryable flag;
+- user-facing message key;
+- technical details;
+- correlation id, если возможно;
+- source layer.
+
+## 7.3. Логи
+
+Логи должны:
+
+- не содержать tokens;
+- не содержать персональные данные без необходимости;
+- иметь correlation id для sync run;
+- позволять восстановить sequence событий outbox.
+
+## 7.4. Безопасность
+
+- User token и device token не логировать.
+- Diagnostics export должен редактировать секреты.
+- Core не должен сам решать platform secure storage без adapter layer.
+- UI-клиенты отвечают за DPAPI/Keystore или передают token provider.
+
+## 7.5. Совместимость
+
+Нужно явно версионировать:
+
+- core API version;
+- FFI ABI version;
+- local storage schema version;
+- sync protocol compatibility;
+- minimum supported SyncServer version.
+
+## 7.6. Производительность
+
+Целевые ожидания:
+
+- поиск по локальному каталогу должен быть быстрым на десятках тысяч items;
+- sync должен работать страницами, не загружая всё в память одним JSON;
+- outbox должен переживать restart;
+- UI не должен блокироваться на долгих sync operations.
+
+## 7.7. Потокобезопасность
+
+- Core handle должен иметь документированные правила использования.
+- Facade должен быть безопасен для вызовов из UI thread и background worker согласно выбранной модели.
+- Долгие операции должны быть async или иметь polling/progress API.
+
+---
+
+# 8. Рекомендованный порядок запуска фаз
+
+1. Фаза 0 — архитектурная фиксация.
+2. Фаза 1 — Rust workspace.
+3. Фаза 2 — DTO/domain.
+4. Фаза 3 — SQLite storage.
+5. Фаза 4 — HTTP client.
+6. Фаза 5 — auth/session.
+7. Фаза 6 — pull sync.
+8. Фаза 7 — operation drafts.
+9. Фаза 8 — outbox/push.
+10. Фаза 9 — sync engine.
+11. Фаза 10 — conflicts/errors.
+12. Фаза 11 — facade.
+13. Фаза 12 — FFI.
+14. Фаза 13 — CLI/tooling.
+15. Фаза 14 — integration with SyncServer.
+16. Фаза 15 — packaging.
+17. Фаза 16 — client docs.
+18. Фаза 17 — release candidate.
+
+---
+
+# 9. Минимальный MVP-срез
+
+Если нужно получить работоспособный MVP раньше полного release, минимальный срез:
+
+1. Фаза 1 — workspace.
+2. Фаза 2 — DTO для auth/catalog/operations/balances.
+3. Фаза 3 — SQLite catalog + drafts + outbox.
+4. Фаза 4 — HTTP client для auth/catalog/operations.
+5. Фаза 5 — auth/session.
+6. Фаза 6 — pull catalog.
+7. Фаза 7 — local operation draft.
+8. Фаза 8 — push operation через `/operations`.
+9. Фаза 11 — facade для этих сценариев.
+10. Фаза 12 — FFI MVP.
+11. Фаза 16 — docs MVP.
+
+MVP считается полезным, если UI может:
+
+- открыть локальную БД;
+- принять user token/device token;
+- загрузить auth context;
+- загрузить каталог;
+- искать items offline;
+- создать операцию offline;
+- поставить операцию в outbox;
+- отправить операцию при наличии сети;
+- показать sync/outbox status.
+
+---
+
+# 10. Риски и меры снижения
+
+## 10.1. Риск: SyncServer API недостаточно стабилен
+
+Меры:
+
+- contract fixtures;
+- opt-in integration tests;
+- version compatibility document;
+- error mapping для protocol mismatch.
+
+## 10.2. Риск: FFI усложнит разработку
+
+Меры:
+
+- сначала facade в чистом Rust;
+- потом FFI над facade;
+- минимальный FFI MVP;
+- examples для C# и Kotlin.
+
+## 10.3. Риск: две платформы требуют разные storage paths и secret storage
+
+Меры:
+
+- core принимает paths/config извне;
+- secrets через adapter или переданные tokens;
+- platform storage остаётся в UI-клиентах.
+
+## 10.4. Риск: offline validation начнёт конфликтовать с сервером
+
+Меры:
+
+- offline validation делится на errors и warnings;
+- финальное решение всегда за server;
+- server rejection становится conflict, а не silent failure.
+
+## 10.5. Риск: большой scope
+
+Меры:
+
+- строгие фазы;
+- phase report после каждой фазы;
+- MVP-срез;
+- запрет на изменение `WarehouseAIWorkstation`.
+
+---
+
+# 11. Передача работы между фазами
+
+После каждой фазы нужно оставить:
+
+- обновлённый код;
+- обновлённую документацию;
+- список выполненных команд;
+- список известных ограничений;
+- список решений, которые нельзя менять без ADR;
+- список задач следующей фазы;
+- phase report.
+
+Шаблон `docs/phase_reports/PHASE_N.md`:
+
+```text
+# Phase N Report
+
+## Scope completed
+
+## Files changed
+
+## Public API changes
+
+## Storage changes
+
+## Tests run
+
+## Known limitations
+
+## Decisions made
+
+## Handoff to next phase
+```
+
+---
+
+# 12. Финальный результат
+
+В конце реализации должен быть готов модуль `Warehouse_client_core`, который:
+
+- компилируется как Rust workspace;
+- имеет core library;
+- имеет FFI library для UI-клиентов;
+- имеет CLI для диагностики;
+- хранит локальные данные в SQLite;
+- поддерживает offline-first сценарии;
+- синхронизируется с `SyncServer`;
+- не заменяет `SyncServer`;
+- не затрагивает `WarehouseAIWorkstation`;
+- предоставляет документацию для WPF и Kotlin команд;
+- имеет тесты на каждую критичную часть;
+- готов к интеграции в `WarehouseDesktop` и `WarehouseMobile`.
