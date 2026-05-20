@@ -4,6 +4,11 @@
 
 `Warehouse_client_core` is the planned Rust offline-first runtime for future desktop and mobile clients.
 
+## Functional Requirements Authority
+
+- `Functional and WorkLogik.md` at the workspace root is the **canonical functional requirements document** for operation types, user roles, lifecycle rules, and domain behaviour.
+- Before implementing any sync logic, operation draft service, or domain behaviour, re-read the relevant section of `Functional and WorkLogik.md` and confirm alignment.
+
 ## Rules
 
 - SyncServer remains the source of truth.
@@ -11,6 +16,15 @@
 - Put local SQLite schema, outbox, sync, DTO mapping, conflict state, and a stable facade API here.
 - Keep WPF, Android, and AI workstation UI logic out of this project.
 - Do not start production implementation before architecture decisions are captured in docs/ADR.
+
+## Git Rules
+
+- Agents may commit completed Rust core changes after relevant checks/tests pass.
+- Commit only from the `dev` branch.
+- Switching from `dev` to another branch is forbidden by default.
+- If the branch is not `dev`, warn the user and do not commit until the user gives an explicit command.
+- If checks/tests fail, are unavailable, or were not run, do not commit and ask the user what to do.
+- Git push is completely forbidden; the user pushes manually.
 
 ## Active TZ
 

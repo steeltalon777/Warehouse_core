@@ -112,11 +112,20 @@ pub struct OperationUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationLineResponse {
-    pub id: i64,
-    pub item_id: i32,
-    pub item_name: String,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    pub id: String,
     #[serde(default)]
+    pub item_id: Option<i32>,
+    #[serde(
+        default,
+        alias = "item_name_snapshot",
+        alias = "resolved_item_name",
+        alias = "display_name"
+    )]
+    pub item_name: String,
+    #[serde(default, alias = "item_sku_snapshot", alias = "sku")]
     pub item_sku: Option<String>,
+    #[serde(default, alias = "unit_symbol_snapshot")]
     pub unit_symbol: String,
     pub qty: serde_json::Value,
     #[serde(default)]
@@ -131,13 +140,16 @@ pub struct OperationLineResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationResponse {
-    pub id: i64,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    pub id: String,
     pub operation_type: OperationType,
     pub status: OperationStatus,
     pub site_id: i32,
+    #[serde(default)]
     pub site_code: String,
     pub lines: Vec<OperationLineResponse>,
     pub created_by_user_id: uuid::Uuid,
+    #[serde(default)]
     pub created_by_user_name: String,
     #[serde(default)]
     pub effective_at: Option<String>,
@@ -148,10 +160,12 @@ pub struct OperationResponse {
     #[serde(default)]
     pub recipient_id: Option<i32>,
     #[serde(default)]
+    #[serde(alias = "recipient_name_snapshot")]
     pub recipient_name: Option<String>,
     #[serde(default)]
     pub issued_to_name: Option<String>,
     #[serde(default)]
+    #[serde(alias = "notes")]
     pub comment: Option<String>,
     #[serde(default)]
     pub acceptance_state: Option<AcceptanceState>,
@@ -167,7 +181,7 @@ pub struct OperationResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptLineRequest {
-    pub line_id: i64,
+    pub line_id: String,
     pub accepted_qty: serde_json::Value,
     #[serde(default)]
     pub lost_qty: Option<serde_json::Value>,
@@ -189,13 +203,18 @@ pub struct SetEffectiveAtRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationListItem {
-    pub id: i64,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    pub id: String,
     pub operation_type: OperationType,
     pub status: OperationStatus,
     pub site_id: i32,
+    #[serde(default)]
     pub site_code: String,
+    #[serde(default)]
     pub line_count: i32,
+    #[serde(default)]
     pub total_qty: serde_json::Value,
+    #[serde(default)]
     pub created_by_user_name: String,
     pub created_at: String,
     pub updated_at: String,

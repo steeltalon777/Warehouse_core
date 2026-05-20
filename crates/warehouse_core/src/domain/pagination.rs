@@ -20,8 +20,11 @@ impl Default for PageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginatedResponse<T> {
     pub items: Vec<T>,
+    #[serde(alias = "total")]
     pub total_count: u64,
+    #[serde(default, alias = "offset")]
     pub page: u32,
+    #[serde(default, alias = "limit")]
     pub page_size: u32,
 }
 

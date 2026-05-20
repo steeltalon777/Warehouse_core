@@ -131,7 +131,7 @@ enum OperationCommands {
     /// Get operation detail
     Get {
         #[arg(required = true)]
-        operation_id: i64,
+        operation_id: String,
     },
 }
 
@@ -495,24 +495,28 @@ async fn cmd_operations(action: OperationCommands) {
             }
             Err(e) => eprintln!("Error: {e}"),
         },
-        OperationCommands::Get { operation_id } => match handle.get_operation(operation_id).await {
-            Ok(op) => {
-                println!(
-                    "Operation {}: {:?} / {:?}",
-                    op.id, op.operation_type, op.status
-                );
-                println!("  Site: {} ({})", op.site_id, op.site_code);
-                println!("  Created by: {}", op.created_by_user_name);
-                println!("  Lines:");
-                for line in &op.lines {
+        OperationCommands::Get { operation_id } => {
+            match handle.get_operation(&operation_id).await {
+                Ok(op) => {
                     println!(
-                        "    item {} — {} qty {}",
-                        line.item_id, line.item_name, line.qty
+                        "Operation {}: {:?} / {:?}",
+                        op.id, op.operation_type, op.status
                     );
+                    println!("  Site: {} ({})", op.site_id, op.site_code);
+                    println!("  Created by: {}", op.created_by_user_name);
+                    println!("  Lines:");
+                    for line in &op.lines {
+                        println!(
+                            "    item {} — {} qty {}",
+                            line.item_id.unwrap_or_default(),
+                            line.item_name,
+                            line.qty
+                        );
+                    }
                 }
+                Err(e) => eprintln!("Error: {e}"),
             }
-            Err(e) => eprintln!("Error: {e}"),
-        },
+        }
     }
 }
 

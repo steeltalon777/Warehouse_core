@@ -29,7 +29,7 @@ impl SyncServerClient {
     }
 
     /// GET /operations/{id} — single operation
-    pub async fn operations_get(&self, id: i64) -> CoreResult<OperationResponse> {
+    pub async fn operations_get(&self, id: &str) -> CoreResult<OperationResponse> {
         let req = self.get(&format!("/api/v1/operations/{id}"), AuthKind::User);
         self.send(req).await
     }
@@ -62,7 +62,7 @@ impl SyncServerClient {
     /// PATCH /operations/{id} — update operation fields
     pub async fn operations_update(
         &self,
-        id: i64,
+        id: &str,
         update: &OperationUpdate,
     ) -> CoreResult<OperationResponse> {
         let req = self
@@ -74,7 +74,7 @@ impl SyncServerClient {
     /// PATCH /operations/{id}/effective-at — change effective date
     pub async fn operations_set_effective_at(
         &self,
-        id: i64,
+        id: &str,
         effective_at: &str,
     ) -> CoreResult<OperationResponse> {
         let body = SetEffectiveAtRequest {
@@ -90,13 +90,13 @@ impl SyncServerClient {
     }
 
     /// POST /operations/{id}/submit — submit operation
-    pub async fn operations_submit(&self, id: i64) -> CoreResult<OperationResponse> {
+    pub async fn operations_submit(&self, id: &str) -> CoreResult<OperationResponse> {
         let req = self.post(&format!("/api/v1/operations/{id}/submit"), AuthKind::User);
         self.send(req).await
     }
 
     /// POST /operations/{id}/cancel — cancel operation
-    pub async fn operations_cancel(&self, id: i64) -> CoreResult<OperationResponse> {
+    pub async fn operations_cancel(&self, id: &str) -> CoreResult<OperationResponse> {
         let req = self.post(&format!("/api/v1/operations/{id}/cancel"), AuthKind::User);
         self.send(req).await
     }
@@ -104,7 +104,7 @@ impl SyncServerClient {
     /// POST /operations/{id}/accept-lines — accept/reject lines
     pub async fn operations_accept_lines(
         &self,
-        id: i64,
+        id: &str,
         accept: &AcceptLinesRequest,
     ) -> CoreResult<OperationResponse> {
         let req = self

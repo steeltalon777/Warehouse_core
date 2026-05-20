@@ -7,7 +7,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingRequest {
     pub site_id: i32,
-    pub device_id: Uuid,
+    #[serde(default)]
+    pub device_id: i32,
     pub last_server_seq: i64,
     pub outbox_count: i32,
     pub client_time: String,
@@ -53,8 +54,9 @@ pub struct EventIn {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushRequest {
     pub site_id: i32,
-    pub device_id: Uuid,
-    pub batch_id: Uuid,
+    #[serde(default)]
+    pub device_id: i32,
+    pub batch_id: uuid::Uuid,
     pub events: Vec<EventIn>,
 }
 
@@ -77,14 +79,16 @@ pub struct PullEvent {
     pub event_datetime: String,
     pub schema_version: String,
     pub payload: serde_json::Value,
-    pub source_device_id: Uuid,
+    #[serde(default)]
+    pub source_device_id: i32,
 }
 
 /// POST /pull request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequest {
     pub site_id: i32,
-    pub device_id: Uuid,
+    #[serde(default)]
+    pub device_id: i32,
     pub since_seq: i64,
     pub limit: Option<i32>,
 }
@@ -106,7 +110,8 @@ pub struct BootstrapResponse {
     pub is_root: bool,
     pub root_user: Option<RootUserInfo>,
     pub root_role: Option<String>,
-    pub device_id: Uuid,
+    #[serde(default)]
+    pub device_id: i32,
     pub device_registered: bool,
     pub bootstrap_data: BootstrapData,
 }

@@ -386,10 +386,8 @@ impl CoreHandle {
         repo.balances.get_by_item(item_id).await
     }
 
-    pub async fn get_balance_summary(
-        &mut self,
-    ) -> CoreResult<PaginatedResponse<BalanceSummaryRow>> {
-        self.client()?.balances_summary(1, 500).await
+    pub async fn get_balance_summary(&mut self) -> CoreResult<BalanceSummaryRow> {
+        self.client()?.balances_summary(1, 200).await
     }
 
     pub async fn list_pending_acceptance(&self) -> CoreResult<Vec<PendingAcceptanceRow>> {
@@ -419,13 +417,13 @@ impl CoreHandle {
         let mut filters = std::collections::HashMap::new();
         filters.insert("site_id", sid.as_str());
         self.client()?
-            .operations_list(page, page_size, Some(filters))
+            .operations_list(page, page_size.min(100), Some(filters))
             .await
     }
 
     pub async fn get_operation(
         &mut self,
-        operation_id: i64,
+        operation_id: &str,
     ) -> CoreResult<crate::domain::operation::OperationResponse> {
         self.client()?.operations_get(operation_id).await
     }
@@ -487,7 +485,7 @@ impl CoreHandle {
     ) -> CoreResult<
         crate::domain::pagination::PaginatedResponse<crate::domain::reports::StockSummaryRow>,
     > {
-        self.client()?.reports_stock_summary(1, 500).await
+        self.client()?.reports_stock_summary(1, 200).await
     }
 
     pub async fn run_item_movement(
@@ -496,7 +494,7 @@ impl CoreHandle {
         crate::domain::pagination::PaginatedResponse<crate::domain::reports::ItemMovementRow>,
     > {
         self.client()?
-            .reports_item_movement(1, 500, None, None, None)
+            .reports_item_movement(1, 200, None, None, None)
             .await
     }
 
@@ -768,7 +766,7 @@ impl CoreHandle {
 
     pub async fn accept_operation_lines(
         &mut self,
-        operation_id: i64,
+        operation_id: &str,
         request: &AcceptLinesRequest,
     ) -> CoreResult<crate::domain::operation::OperationResponse> {
         self.client()?
@@ -795,7 +793,7 @@ pub struct ProfileStatus {
     pub user_email: String,
     pub role: String,
     pub is_root: bool,
-    pub device_id: uuid::Uuid,
+    pub device_id: i32,
     pub device_registered: bool,
     pub active_site_id: Option<i32>,
     pub protocol_version: String,
@@ -811,7 +809,7 @@ pub struct AuthContextDto {
     pub role: String,
     pub is_root: bool,
     pub available_sites: Vec<crate::domain::auth::AuthSiteInfo>,
-    pub device_id: uuid::Uuid,
+    pub device_id: i32,
     pub device_registered: bool,
 }
 

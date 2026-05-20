@@ -48,6 +48,8 @@ pub struct CatalogSiteDto {
     pub name: String,
     pub is_active: bool,
     #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
     pub permissions: Option<std::collections::HashMap<String, bool>>,
 }
 

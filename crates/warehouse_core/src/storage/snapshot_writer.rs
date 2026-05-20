@@ -15,7 +15,8 @@ fn now_str() -> String {
 }
 
 /// SnapshotWriter: transactional writes for each pull family.
-/// Each method clears the family's local data and replaces it atomically.
+/// Snapshot families that are fetched as full lists replace local state atomically.
+/// Cursor/delta families merge by primary key to avoid wiping unchanged parents.
 pub struct SnapshotWriter {
     pool: SqlitePool,
 }
@@ -25,18 +26,31 @@ impl SnapshotWriter {
         Self { pool }
     }
 
+    async fn table_has_rows(&self, table: &str) -> CoreResult<bool> {
+        let query = format!("SELECT 1 FROM {table} LIMIT 1");
+        let row = sqlx::query(&query)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
+        Ok(row.is_some())
+    }
+
+    pub async fn has_items(&self) -> CoreResult<bool> {
+        self.table_has_rows("items").await
+    }
+
+    pub async fn has_categories(&self) -> CoreResult<bool> {
+        self.table_has_rows("categories").await
+    }
+
+    pub async fn has_units(&self) -> CoreResult<bool> {
+        self.table_has_rows("units").await
+    }
+
     pub async fn write_items(&self, items: &[ItemDto]) -> CoreResult<()> {
         let mut tx = self
             .pool
             .begin()
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
-        sqlx::query("DELETE FROM items")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
-        sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(&mut *tx)
             .await
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         for item in items {
@@ -47,7 +61,16 @@ impl SnapshotWriter {
             let created_at = item.created_at.as_deref().unwrap_or(&item.updated_at);
             sqlx::query(
                 "INSERT INTO items (id, sku, name, category_id, unit_id, description, is_active, hashtags, updated_at, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   sku = excluded.sku,
+                   name = excluded.name,
+                   category_id = excluded.category_id,
+                   unit_id = excluded.unit_id,
+                   description = excluded.description,
+                   is_active = excluded.is_active,
+                   hashtags = excluded.hashtags,
+                   updated_at = excluded.updated_at",
             )
             .bind(item.id).bind(&item.sku).bind(&item.name)
             .bind(item.category_id).bind(item.unit_id).bind(&item.description)
@@ -55,10 +78,6 @@ impl SnapshotWriter {
             .bind(created_at)
             .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         }
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         tx.commit()
             .await
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
@@ -71,17 +90,26 @@ impl SnapshotWriter {
             .begin()
             .await
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
-        sqlx::query("DELETE FROM categories")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         let now = now_str();
         for cat in cats {
             sqlx::query(
-                "INSERT INTO categories (id, name, parent_id, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO categories (id, name, parent_id, is_active, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name,
+                   parent_id = excluded.parent_id,
+                   is_active = excluded.is_active,
+                   updated_at = excluded.updated_at",
             )
-            .bind(cat.id).bind(&cat.name).bind(cat.parent_id).bind(cat.is_active).bind(&now).bind(&cat.updated_at)
-            .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
+            .bind(cat.id)
+            .bind(&cat.name)
+            .bind(cat.parent_id)
+            .bind(cat.is_active)
+            .bind(&now)
+            .bind(&cat.updated_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         }
         tx.commit()
             .await
@@ -95,17 +123,26 @@ impl SnapshotWriter {
             .begin()
             .await
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
-        sqlx::query("DELETE FROM units")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         let now = now_str();
         for unit in units {
             sqlx::query(
-                "INSERT INTO units (id, name, symbol, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO units (id, name, symbol, is_active, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   name = excluded.name,
+                   symbol = excluded.symbol,
+                   is_active = excluded.is_active,
+                   updated_at = excluded.updated_at",
             )
-            .bind(unit.id).bind(&unit.name).bind(&unit.symbol).bind(unit.is_active).bind(&now).bind(&unit.updated_at)
-            .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
+            .bind(unit.id)
+            .bind(&unit.name)
+            .bind(&unit.symbol)
+            .bind(unit.is_active)
+            .bind(&now)
+            .bind(&unit.updated_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         }
         tx.commit()
             .await
@@ -124,11 +161,12 @@ impl SnapshotWriter {
             .await
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         for s in sites {
-            sqlx::query("INSERT INTO sites (site_id, code, name, is_active) VALUES (?, ?, ?, ?)")
+            sqlx::query("INSERT INTO sites (site_id, code, name, is_active, updated_at) VALUES (?, ?, ?, ?, ?)")
                 .bind(s.site_id)
                 .bind(&s.code)
                 .bind(&s.name)
                 .bind(s.is_active)
+                .bind(now_str())
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
@@ -152,12 +190,30 @@ impl SnapshotWriter {
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         let now = now_str();
         for r in rows {
-            let inv_subject_id = r.item_id as i64;
+            sqlx::query(
+                "INSERT INTO inventory_subjects (id, subject_type, item_id, temporary_item_id, created_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                   subject_type = excluded.subject_type,
+                   item_id = excluded.item_id,
+                   temporary_item_id = excluded.temporary_item_id",
+            )
+            .bind(r.inventory_subject_id)
+            .bind(&r.subject_type)
+            .bind(if r.item_id == 0 { None } else { Some(r.item_id) })
+            .bind(r.temporary_item_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
             let qty_str = r.qty.to_string();
             sqlx::query(
                 "INSERT INTO balances (site_id, inventory_subject_id, qty, updated_at) VALUES (?, ?, ?, ?)",
             )
-            .bind(site_id).bind(inv_subject_id).bind(&qty_str).bind(&now)
+            .bind(site_id)
+            .bind(r.inventory_subject_id)
+            .bind(&qty_str)
+            .bind(&now)
             .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         }
         tx.commit()
@@ -223,40 +279,7 @@ impl SnapshotWriter {
     }
 
     pub async fn write_operations(&self, ops: &[OperationListItem]) -> CoreResult<()> {
-        if ops.is_empty() {
-            return Ok(());
-        }
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
-        sqlx::query("DELETE FROM operation_drafts")
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
-        let now = now_str();
-        for op in ops {
-            let op_type = serde_json::to_string(&op.operation_type).unwrap_or_default();
-            let _op_status = serde_json::to_string(&op.status).unwrap_or_default();
-            sqlx::query(
-                "INSERT INTO operation_drafts
-                 (draft_id, operation_type, site_id, created_at, updated_at, comment)
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(op.id.to_string())
-            .bind(&op_type)
-            .bind(op.site_id)
-            .bind(&op.created_at)
-            .bind(&now)
-            .bind(&op.created_by_user_name)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
-        }
-        tx.commit()
-            .await
-            .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
+        let _ = ops;
         Ok(())
     }
 
@@ -324,7 +347,7 @@ impl SnapshotWriter {
                  (operation_id, operation_line_id, site_id, inventory_subject_id, qty, accepted_qty, lost_qty, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(row.operation_id).bind(row.operation_line_id)
+            .bind(&row.operation_id).bind(&row.operation_line_id)
             .bind(0).bind(0)
             .bind(&qty).bind(&accepted).bind(&lost).bind(&now)
             .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
@@ -353,7 +376,7 @@ impl SnapshotWriter {
                  (operation_line_id, operation_id, site_id, inventory_subject_id, lost_qty, is_resolved, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(row.operation_line_id).bind(row.operation_id)
+            .bind(&row.operation_line_id).bind(&row.operation_id)
             .bind(0).bind(0).bind(&lost).bind(row.is_resolved).bind(&now)
             .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         }
@@ -381,7 +404,7 @@ impl SnapshotWriter {
                  (operation_line_id, operation_id, site_id, inventory_subject_id, qty, issued_to_name, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(row.operation_line_id).bind(row.operation_id)
+            .bind(&row.operation_line_id).bind(&row.operation_id)
             .bind(0).bind(0).bind(&qty).bind(&row.issued_to_name).bind(&now)
             .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         }

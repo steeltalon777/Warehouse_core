@@ -386,7 +386,10 @@ impl BalanceRepo for SqliteBalanceRepo {
             .map(|r| crate::domain::balance::BalanceRow {
                 site_id: r.get(0),
                 site_code: String::new(),
+                inventory_subject_id: 0,
+                subject_type: "catalog_item".to_string(),
                 item_id,
+                temporary_item_id: None,
                 item_name: String::new(),
                 item_sku: None,
                 unit_symbol: String::new(),
@@ -403,7 +406,10 @@ impl BalanceRepo for SqliteBalanceRepo {
     ) -> CoreResult<Vec<crate::domain::balance::BalanceRow>> {
         use sqlx::Row;
         let rows = sqlx::query(
-            "SELECT b.site_id, b.qty, b.updated_at FROM balances b WHERE b.site_id = ?",
+            "SELECT b.site_id, b.inventory_subject_id, s.subject_type, s.item_id, s.temporary_item_id, b.qty, b.updated_at
+             FROM balances b
+             LEFT JOIN inventory_subjects s ON b.inventory_subject_id = s.id
+             WHERE b.site_id = ?",
         )
         .bind(site_id)
         .fetch_all(&self.pool)
@@ -415,12 +421,15 @@ impl BalanceRepo for SqliteBalanceRepo {
             .map(|r| crate::domain::balance::BalanceRow {
                 site_id: r.get(0),
                 site_code: String::new(),
-                item_id: 0,
+                inventory_subject_id: r.get(1),
+                subject_type: r.get::<Option<String>, _>(2).unwrap_or_default(),
+                item_id: r.get::<Option<i32>, _>(3).unwrap_or_default(),
+                temporary_item_id: r.get(4),
                 item_name: String::new(),
                 item_sku: None,
                 unit_symbol: String::new(),
-                qty: serde_json::Value::String(r.get::<String, _>(2)),
-                updated_at: r.get(3),
+                qty: serde_json::Value::String(r.get::<String, _>(5)),
+                updated_at: r.get(6),
                 is_subject: None,
             })
             .collect())
@@ -438,7 +447,10 @@ impl BalanceRepo for SqliteBalanceRepo {
             .map(|r| crate::domain::balance::BalanceRow {
                 site_id: r.get(0),
                 site_code: String::new(),
+                inventory_subject_id: r.get(1),
+                subject_type: String::new(),
                 item_id: 0,
+                temporary_item_id: None,
                 item_name: String::new(),
                 item_sku: None,
                 unit_symbol: String::new(),
@@ -794,8 +806,17 @@ impl DraftRepo for SqliteDraftRepo {
                destination_site_id = excluded.destination_site_id, recipient_id = excluded.recipient_id,
                issued_to_name = excluded.issued_to_name, comment = excluded.comment, updated_at = excluded.updated_at",
         )
-            .bind(draft.draft_id.to_string())
-            .bind(&draft.comment).bind(&draft.created_at).bind(&draft.updated_at)
+            .bind(draft.draft_id.to_string())                                    // 1: draft_id
+            .bind(serde_json::to_string(&draft.operation_type).unwrap_or_default()) // 2: operation_type
+            .bind(draft.site_id)                                                  // 3: site_id
+            .bind(&draft.effective_at)                                            // 4: effective_at
+            .bind(draft.source_site_id)                                           // 5: source_site_id
+            .bind(draft.destination_site_id)                                      // 6: destination_site_id
+            .bind(draft.recipient_id)                                             // 7: recipient_id
+            .bind(&draft.issued_to_name)                                          // 8: issued_to_name
+            .bind(&draft.comment)                                                 // 9: comment
+            .bind(&draft.created_at)                                              // 10: created_at
+            .bind(&draft.updated_at)                                              // 11: updated_at
             .execute(&mut *tx).await.map_err(|e| map_err!(e))?;
 
         sqlx::query("DELETE FROM operation_draft_lines WHERE draft_id = ?")
@@ -1126,8 +1147,8 @@ impl AssetsRepo for SqliteAssetsRepo {
                accepted_qty = excluded.accepted_qty, lost_qty = excluded.lost_qty,
                updated_at = excluded.updated_at",
         )
-        .bind(row.operation_id)
-        .bind(row.operation_line_id)
+        .bind(&row.operation_id)
+        .bind(&row.operation_line_id)
         .bind(site_id)
         .bind(inv_subject_id)
         .bind(&qty)
@@ -1188,8 +1209,8 @@ impl AssetsRepo for SqliteAssetsRepo {
                inventory_subject_id = excluded.inventory_subject_id, lost_qty = excluded.lost_qty,
                is_resolved = excluded.is_resolved, updated_at = excluded.updated_at",
         )
-        .bind(row.operation_line_id)
-        .bind(row.operation_id)
+        .bind(&row.operation_line_id)
+        .bind(&row.operation_id)
         .bind(site_id)
         .bind(inv_subject_id)
         .bind(&lost)
@@ -1247,8 +1268,8 @@ impl AssetsRepo for SqliteAssetsRepo {
                inventory_subject_id = excluded.inventory_subject_id, qty = excluded.qty,
                issued_to_name = excluded.issued_to_name, updated_at = excluded.updated_at",
         )
-        .bind(row.operation_line_id)
-        .bind(row.operation_id)
+        .bind(&row.operation_line_id)
+        .bind(&row.operation_id)
         .bind(site_id)
         .bind(inv_subject_id)
         .bind(&qty)
@@ -1825,7 +1846,7 @@ impl ReportsRepo for SqliteReportsRepo {
             .bind(&r.item_sku)
             .bind(&r.unit_symbol)
             .bind(&r.operation_type)
-            .bind(r.operation_id)
+            .bind(&r.operation_id)
             .bind(&qty)
             .bind(&r.effective_at)
             .bind(r.site_id)
@@ -1850,7 +1871,7 @@ impl ReportsRepo for SqliteReportsRepo {
             item_sku: Option<String>,
             unit_symbol: String,
             operation_type: String,
-            operation_id: i64,
+            operation_id: String,
             quantity: String,
             effective_at: String,
             site_id: i32,

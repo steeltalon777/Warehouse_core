@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 /// Row from /pending-acceptance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingAcceptanceRow {
-    pub operation_id: i64,
-    pub operation_line_id: i64,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    pub operation_id: String,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    pub operation_line_id: String,
     pub item_id: i32,
     pub item_name: String,
     #[serde(default)]
@@ -20,29 +22,42 @@ pub struct PendingAcceptanceRow {
 /// Row from /lost-assets
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LostAssetRow {
-    pub operation_id: i64,
-    pub operation_line_id: i64,
-    pub item_id: i32,
-    pub item_name: String,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    pub operation_id: String,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    pub operation_line_id: String,
     #[serde(default)]
+    pub item_id: i32,
+    #[serde(default, alias = "display_name", alias = "resolved_item_name")]
+    pub item_name: String,
+    #[serde(default, alias = "sku")]
     pub item_sku: Option<String>,
+    #[serde(default)]
     pub unit_symbol: String,
     pub qty: serde_json::Value,
+    #[serde(default)]
     pub lost_qty: serde_json::Value,
+    #[serde(default)]
     pub is_resolved: bool,
 }
 
 /// Row from /issued-assets
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssuedAssetRow {
-    pub operation_id: i64,
-    pub operation_line_id: i64,
-    pub item_id: i32,
-    pub item_name: String,
     #[serde(default)]
+    pub operation_id: String,
+    #[serde(default)]
+    pub operation_line_id: String,
+    #[serde(default)]
+    pub item_id: i32,
+    #[serde(default, alias = "display_name", alias = "resolved_item_name")]
+    pub item_name: String,
+    #[serde(default, alias = "sku")]
     pub item_sku: Option<String>,
+    #[serde(default)]
     pub unit_symbol: String,
     pub qty: serde_json::Value,
+    #[serde(alias = "recipient_name")]
     pub issued_to_name: String,
 }
 

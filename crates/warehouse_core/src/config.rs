@@ -19,9 +19,9 @@ pub struct CoreConfig {
     #[serde(default = "default_client_version")]
     pub client_version: String,
 
-    /// Registered device ID UUID (set after bootstrap)
+    /// Registered device ID (set after bootstrap)
     #[serde(default)]
-    pub device_id: Option<uuid::Uuid>,
+    pub device_id: Option<i32>,
 
     /// Active site ID (set after login/site selection)
     #[serde(default)]

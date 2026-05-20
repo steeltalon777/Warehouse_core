@@ -4,11 +4,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceRow {
     pub site_id: i32,
+    #[serde(alias = "site_name")]
     pub site_code: String,
-    pub item_id: i32,
-    pub item_name: String,
     #[serde(default)]
+    pub inventory_subject_id: i32,
+    #[serde(default)]
+    pub subject_type: String,
+    #[serde(default)]
+    pub item_id: i32,
+    #[serde(default)]
+    pub temporary_item_id: Option<i32>,
+    #[serde(default, alias = "display_name", alias = "resolved_item_name")]
+    pub item_name: String,
+    #[serde(default, alias = "sku")]
     pub item_sku: Option<String>,
+    #[serde(default)]
     pub unit_symbol: String,
     pub qty: serde_json::Value,
     pub updated_at: String,
@@ -19,8 +29,13 @@ pub struct BalanceRow {
 /// Balance summary from /balances/summary
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceSummaryRow {
-    pub item_id: i32,
-    pub item_name: String,
-    pub total_qty: serde_json::Value,
-    pub site_count: i32,
+    pub accessible_sites_count: i32,
+    pub summary: BalanceSummaryData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceSummaryData {
+    pub rows_count: i32,
+    pub sites_count: i32,
+    pub total_quantity: f64,
 }

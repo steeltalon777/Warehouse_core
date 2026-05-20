@@ -1,15 +1,14 @@
 /// Core identifier types used across the warehouse domain.
-use uuid::Uuid;
-
 /// Bundles the core identity state for a client instance.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CoreIds {
-    /// Device UUID assigned by SyncServer during bootstrap
-    pub device_id: Option<Uuid>,
+    /// Device ID assigned by SyncServer during bootstrap
+    #[serde(default)]
+    pub device_id: Option<i32>,
     /// Active site ID
     pub site_id: Option<i32>,
     /// Authenticated user UUID
-    pub user_id: Option<Uuid>,
+    pub user_id: Option<uuid::Uuid>,
 }
 
 impl CoreIds {

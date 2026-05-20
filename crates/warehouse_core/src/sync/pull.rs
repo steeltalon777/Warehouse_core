@@ -97,66 +97,108 @@ impl PullSyncService {
         let mut summary = SyncRunSummary::new();
 
         // 1. Health/readiness/protocol
-        self.log_result(&mut summary, self.pull_health().await)
+        self.log_result(&mut summary, "health", self.pull_health().await)
             .await;
 
         // 2. Auth context
-        self.log_result(&mut summary, self.pull_auth().await).await;
+        self.log_result(&mut summary, "auth", self.pull_auth().await)
+            .await;
 
         // 3. Sites
-        self.log_result(&mut summary, self.pull_sites().await).await;
+        self.log_result(&mut summary, "sites", self.pull_sites().await)
+            .await;
 
-        // 4. Catalog (items, categories, units, tree)
-        self.log_result(&mut summary, self.pull_catalog_items().await)
-            .await;
-        self.log_result(&mut summary, self.pull_catalog_categories().await)
-            .await;
-        self.log_result(&mut summary, self.pull_catalog_units().await)
-            .await;
+        // 4. Catalog (categories first, then units, then items — FK dependency order)
+        self.log_result(
+            &mut summary,
+            "catalog_categories",
+            self.pull_catalog_categories().await,
+        )
+        .await;
+        self.log_result(
+            &mut summary,
+            "catalog_units",
+            self.pull_catalog_units().await,
+        )
+        .await;
+        self.log_result(
+            &mut summary,
+            "catalog_items",
+            self.pull_catalog_items().await,
+        )
+        .await;
 
         // 5. Recipients
-        self.log_result(&mut summary, self.pull_recipients().await)
+        self.log_result(&mut summary, "recipients", self.pull_recipients().await)
             .await;
 
         // 6. Balances for active site
         if let Ok(site_ids) = self.profile.available_site_ids() {
             for sid in site_ids {
-                self.log_result(&mut summary, self.pull_balances(sid).await)
+                self.log_result(&mut summary, "balances", self.pull_balances(sid).await)
                     .await;
             }
         }
 
         // 7. Assets
-        self.log_result(&mut summary, self.pull_pending_acceptance().await)
+        self.log_result(
+            &mut summary,
+            "pending_acceptance",
+            self.pull_pending_acceptance().await,
+        )
+        .await;
+        self.log_result(&mut summary, "lost_assets", self.pull_lost_assets().await)
             .await;
-        self.log_result(&mut summary, self.pull_lost_assets().await)
-            .await;
-        self.log_result(&mut summary, self.pull_issued_assets().await)
-            .await;
+        self.log_result(
+            &mut summary,
+            "issued_assets",
+            self.pull_issued_assets().await,
+        )
+        .await;
 
         // 8. Temporary items
-        self.log_result(&mut summary, self.pull_temporary_items().await)
-            .await;
+        self.log_result(
+            &mut summary,
+            "temporary_items",
+            self.pull_temporary_items().await,
+        )
+        .await;
 
         // 9. Operation history (for active site)
         if let Some(site_id) = self.get_active_site() {
-            self.log_result(&mut summary, self.pull_operations(site_id).await)
-                .await;
+            self.log_result(
+                &mut summary,
+                "operations",
+                self.pull_operations(site_id).await,
+            )
+            .await;
         }
 
         // 10. Documents (for active site)
         if let Some(site_id) = self.get_active_site() {
-            self.log_result(&mut summary, self.pull_documents(site_id).await)
-                .await;
+            self.log_result(
+                &mut summary,
+                "documents",
+                self.pull_documents(site_id).await,
+            )
+            .await;
         }
 
         // 11. Stock summary report cache
-        self.log_result(&mut summary, self.pull_stock_summary().await)
-            .await;
+        self.log_result(
+            &mut summary,
+            "stock_summary",
+            self.pull_stock_summary().await,
+        )
+        .await;
 
         // 12. Device pull event stream (server_seq)
-        self.log_result(&mut summary, self.pull_device_events().await)
-            .await;
+        self.log_result(
+            &mut summary,
+            "device_events",
+            self.pull_device_events().await,
+        )
+        .await;
 
         summary.finish();
         summary
@@ -275,7 +317,7 @@ impl PullSyncService {
             .await?;
         let resp = self
             .client
-            .catalog_items(cursor.as_deref(), Some(500))
+            .catalog_items(cursor.as_deref(), Some(200))
             .await?;
         let count = resp.items.len();
         self.writer.write_items(&resp.items).await?;
@@ -299,7 +341,7 @@ impl PullSyncService {
             .await?;
         let resp = self
             .client
-            .catalog_categories(cursor.as_deref(), Some(500))
+            .catalog_categories(cursor.as_deref(), Some(200))
             .await?;
         let count = resp.items.len();
         self.writer.write_categories(&resp.items).await?;
@@ -323,7 +365,7 @@ impl PullSyncService {
             .await?;
         let resp = self
             .client
-            .catalog_units(cursor.as_deref(), Some(500))
+            .catalog_units(cursor.as_deref(), Some(200))
             .await?;
         let count = resp.items.len();
         self.writer.write_units(&resp.items).await?;
@@ -492,7 +534,7 @@ impl PullSyncService {
 
     async fn pull_temporary_items(&self) -> CoreResult<FamilyResult> {
         let mut all: Vec<crate::domain::temporary_items::TemporaryItemDto> = Vec::new();
-        let page_size = 200u32;
+        let page_size = 100u32;
         let mut page = 1u32;
         loop {
             let resp: PaginatedResponse<crate::domain::temporary_items::TemporaryItemDto> =
@@ -588,7 +630,7 @@ impl PullSyncService {
     }
 
     async fn pull_stock_summary(&self) -> CoreResult<FamilyResult> {
-        let resp = self.client.reports_stock_summary(1, 500).await?;
+        let resp = self.client.reports_stock_summary(1, 200).await?;
         let params_hash = format!("stock_summary_{}", crate::time::Timestamp::now_utc());
         self.writer
             .write_stock_summary(&params_hash, &resp.items)
@@ -611,7 +653,7 @@ impl PullSyncService {
         let seq = self.cursor_store.get_server_seq().await?.unwrap_or(0);
         let req = crate::domain::sync_types::PullRequest {
             site_id: self.get_active_site().unwrap_or(0),
-            device_id: uuid::Uuid::default(),
+            device_id: 0,
             since_seq: seq,
             limit: Some(200),
         };
@@ -633,7 +675,12 @@ impl PullSyncService {
         self.profile.current().ok()?.active_site_id
     }
 
-    async fn log_result(&self, summary: &mut SyncRunSummary, result: CoreResult<FamilyResult>) {
+    async fn log_result(
+        &self,
+        summary: &mut SyncRunSummary,
+        family_name: &'static str,
+        result: CoreResult<FamilyResult>,
+    ) {
         match result {
             Ok(family) => {
                 let count = family.items_count;
@@ -641,10 +688,9 @@ impl PullSyncService {
                 summary.total_items += count;
             }
             Err(e) => {
-                let name = "unknown";
                 let err_str = e.to_string();
                 summary.families.push(FamilyResult {
-                    name,
+                    name: family_name,
                     success: false,
                     items_count: 0,
                     error: Some(err_str.clone()),

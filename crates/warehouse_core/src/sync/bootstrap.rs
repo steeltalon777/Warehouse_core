@@ -86,25 +86,25 @@ impl BootstrapService {
             }
         }
 
-        // Step 4: Catalog sync (items, categories, units)
-        match self.sync_catalog_items().await {
-            Ok(true) => result.families_synced.push("catalog_items".to_string()),
-            Ok(false) => result.errors.push("catalog_items: empty response".into()),
-            Err(e) => result.errors.push(format!("catalog_items: {e}")),
-        }
+        // Step 4: Catalog sync (categories first, then units, then items — FK dependency order)
         match self.sync_catalog_categories().await {
             Ok(true) => result
                 .families_synced
                 .push("catalog_categories".to_string()),
             Ok(false) => result
-                .errors
-                .push("catalog_categories: empty response".into()),
+                .families_synced
+                .push("catalog_categories".to_string()),
             Err(e) => result.errors.push(format!("catalog_categories: {e}")),
         }
         match self.sync_catalog_units().await {
             Ok(true) => result.families_synced.push("catalog_units".to_string()),
-            Ok(false) => result.errors.push("catalog_units: empty response".into()),
+            Ok(false) => result.families_synced.push("catalog_units".to_string()),
             Err(e) => result.errors.push(format!("catalog_units: {e}")),
+        }
+        match self.sync_catalog_items().await {
+            Ok(true) => result.families_synced.push("catalog_items".to_string()),
+            Ok(false) => result.families_synced.push("catalog_items".to_string()),
+            Err(e) => result.errors.push(format!("catalog_items: {e}")),
         }
 
         // Step 5: Sites
@@ -128,9 +128,20 @@ impl BootstrapService {
             }
         }
 
+        let required_families = [
+            "catalog_items",
+            "catalog_categories",
+            "catalog_units",
+            "sites",
+        ];
+        let has_required_failure = result.errors.iter().any(|e| {
+            required_families
+                .iter()
+                .any(|f| e.starts_with(&format!("{f}:")))
+        });
         result.success = !result.errors.iter().any(|e| {
             e.starts_with("health") || e.starts_with("protocol") || e.starts_with("identity")
-        });
+        }) && !has_required_failure;
         Ok(result)
     }
 
@@ -161,7 +172,7 @@ impl BootstrapService {
             role: ctx.role,
             is_root: ctx.is_root,
             available_sites: ctx.available_sites,
-            device_id: ctx.device.as_ref().map(|d| d.id).unwrap_or_default(),
+            device_id: ctx.device.as_ref().map(|d| d.id).unwrap_or(0),
             device_registered: ctx.device.is_some(),
             active_site_id: ctx.user.default_site_id,
             protocol_version: String::new(),
@@ -172,13 +183,16 @@ impl BootstrapService {
     }
 
     async fn sync_catalog_items(&self) -> CoreResult<bool> {
-        let cursor = self
-            .cursor_store
-            .get_updated_after(keys::CATALOG_ITEMS)
-            .await?;
+        let cursor = if self.writer.has_items().await? {
+            self.cursor_store
+                .get_updated_after(keys::CATALOG_ITEMS)
+                .await?
+        } else {
+            None
+        };
         let resp = self
             .client
-            .catalog_items(cursor.as_deref(), Some(500))
+            .catalog_items(cursor.as_deref(), Some(200))
             .await?;
         self.writer.write_items(&resp.items).await?;
         if let Some(next) = &resp.next_updated_after {
@@ -190,13 +204,16 @@ impl BootstrapService {
     }
 
     async fn sync_catalog_categories(&self) -> CoreResult<bool> {
-        let cursor = self
-            .cursor_store
-            .get_updated_after(keys::CATALOG_CATEGORIES)
-            .await?;
+        let cursor = if self.writer.has_categories().await? {
+            self.cursor_store
+                .get_updated_after(keys::CATALOG_CATEGORIES)
+                .await?
+        } else {
+            None
+        };
         let resp = self
             .client
-            .catalog_categories(cursor.as_deref(), Some(500))
+            .catalog_categories(cursor.as_deref(), Some(200))
             .await?;
         self.writer.write_categories(&resp.items).await?;
         if let Some(next) = &resp.next_updated_after {
@@ -208,13 +225,16 @@ impl BootstrapService {
     }
 
     async fn sync_catalog_units(&self) -> CoreResult<bool> {
-        let cursor = self
-            .cursor_store
-            .get_updated_after(keys::CATALOG_UNITS)
-            .await?;
+        let cursor = if self.writer.has_units().await? {
+            self.cursor_store
+                .get_updated_after(keys::CATALOG_UNITS)
+                .await?
+        } else {
+            None
+        };
         let resp = self
             .client
-            .catalog_units(cursor.as_deref(), Some(500))
+            .catalog_units(cursor.as_deref(), Some(200))
             .await?;
         self.writer.write_units(&resp.items).await?;
         if let Some(next) = &resp.next_updated_after {

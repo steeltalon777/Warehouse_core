@@ -12,7 +12,7 @@ pub struct Profile {
     pub role: String,
     pub is_root: bool,
     pub available_sites: Vec<AuthSiteInfo>,
-    pub device_id: uuid::Uuid,
+    pub device_id: i32,
     pub device_registered: bool,
     pub active_site_id: Option<i32>,
     pub protocol_version: String,
@@ -63,8 +63,8 @@ impl Profile {
             device_id: repo
                 .get(Self::KEY_DEVICE_ID)
                 .await?
-                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                .unwrap_or_default(),
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(0),
             device_registered: repo
                 .get(Self::KEY_DEVICE_REGISTERED)
                 .await?
@@ -209,7 +209,7 @@ impl ProfileService {
             role: ctx.role,
             is_root: ctx.is_root,
             available_sites: ctx.available_sites,
-            device_id: ctx.device.as_ref().map(|d| d.id).unwrap_or_default(),
+            device_id: ctx.device.as_ref().map(|d| d.id).unwrap_or(0),
             device_registered: ctx.device.is_some(),
             active_site_id: ctx.user.default_site_id,
             protocol_version: String::new(),

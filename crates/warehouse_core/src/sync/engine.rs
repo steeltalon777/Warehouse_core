@@ -222,6 +222,29 @@ impl SyncEngine {
             result.pull_items = summary.total_items;
             result.pull_errors = summary.errors_count;
             self.profile = ps.into_profile();
+
+            // Propagate required-family failures to SyncResult
+            let required_families = [
+                "sites",
+                "catalog_items",
+                "catalog_categories",
+                "catalog_units",
+            ];
+            let failed_required: Vec<&str> = summary
+                .families
+                .iter()
+                .filter(|f| !f.success && required_families.contains(&f.name))
+                .map(|f| f.name)
+                .collect();
+            if !failed_required.is_empty() {
+                let msg = format!(
+                    "Pull failed for required families: {}",
+                    failed_required.join(", ")
+                );
+                self.emit(SyncPhase::Error, &msg, 90);
+                result.error = Some(msg);
+            }
+
             self.emit(
                 SyncPhase::Pull,
                 &format!(

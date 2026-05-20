@@ -42,8 +42,18 @@ impl Database {
             let p = std::path::Path::new(db_path);
             if let Some(parent) = p.parent() {
                 if !parent.as_os_str().is_empty() {
-                    let _ = std::fs::create_dir_all(parent);
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        crate::error::CoreError::Database(format!(
+                            "Failed to create DB parent directory: {e}"
+                        ))
+                    })?;
                 }
+            }
+            // Create DB file if it doesn't exist — SQLite pool connection may not auto-create on Windows
+            if !p.exists() {
+                std::fs::File::create(db_path).map_err(|e| {
+                    crate::error::CoreError::Database(format!("Failed to create DB file: {e}"))
+                })?;
             }
         }
         let db_url = sqlite_url(db_path);

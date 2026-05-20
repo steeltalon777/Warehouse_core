@@ -38,7 +38,8 @@ pub struct AuthContextUser {
 /// Device info within auth context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthDeviceInfo {
-    pub id: Uuid,
+    #[serde(default)]
+    pub id: i32,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]

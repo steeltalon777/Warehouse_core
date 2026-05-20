@@ -6,8 +6,8 @@
 - [x] 1. Architecture boundaries confirmed
 - [x] 2. Implementation level 1 complete
 - [x] 3. Unit/component tests complete (Level 6: FFI error envelope + handle lifecycle; core: 8/8 pass)
-- [ ] 4. Integration tests with real dependencies complete
-- [ ] 5. Stand smoke tests complete
+- [ ] 4. Integration tests with real dependencies complete — **2026-05-20: stand executed with tokens. Health/auth/site/draft smoke passed, but bootstrap and sync-pull still fail on FK/DTO/page-size issues (`catalog_items`, `operations`, `documents`, `stock_summary`, etc.).**
+- [ ] 5. Stand smoke tests complete — **2026-05-20 blocker updated: stand is available, but smoke is not green yet. `bootstrap` fails on `catalog_items` FK; `sync-pull` records serialization and page-size errors; `operations list 1` still fails on missing `site_code`.**
 - [ ] 6. UI automation tests complete
 - [ ] 7. User scenario tests complete
 - [ ] 8. Regression checks complete
