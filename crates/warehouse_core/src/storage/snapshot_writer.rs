@@ -60,8 +60,10 @@ impl SnapshotWriter {
                 .map(|h| serde_json::to_string(h).unwrap_or_default());
             let created_at = item.created_at.as_deref().unwrap_or(&item.updated_at);
             sqlx::query(
-                "INSERT INTO items (id, sku, name, category_id, unit_id, description, is_active, hashtags, updated_at, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "INSERT INTO items (id, sku, name, category_id, unit_id, description, is_active, hashtags, updated_at, created_at,
+                                    created_by_user_id, updated_by_user_id, created_by_user_name, updated_by_user_name)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                         ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                    sku = excluded.sku,
                    name = excluded.name,
@@ -70,12 +72,16 @@ impl SnapshotWriter {
                    description = excluded.description,
                    is_active = excluded.is_active,
                    hashtags = excluded.hashtags,
-                   updated_at = excluded.updated_at",
+                   updated_at = excluded.updated_at,
+                   updated_by_user_id = excluded.updated_by_user_id,
+                   updated_by_user_name = excluded.updated_by_user_name",
             )
             .bind(item.id).bind(&item.sku).bind(&item.name)
             .bind(item.category_id).bind(item.unit_id).bind(&item.description)
             .bind(item.is_active).bind(&hashtags).bind(&item.updated_at)
             .bind(created_at)
+            .bind(&item.created_by_user_id).bind(&item.updated_by_user_id)
+            .bind(&item.created_by_user_name).bind(&item.updated_by_user_name)
             .execute(&mut *tx).await.map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
         }
         tx.commit()
@@ -93,13 +99,17 @@ impl SnapshotWriter {
         let now = now_str();
         for cat in cats {
             sqlx::query(
-                "INSERT INTO categories (id, name, parent_id, is_active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)
+                "INSERT INTO categories (id, name, parent_id, is_active, created_at, updated_at,
+                                         created_by_user_id, updated_by_user_id, created_by_user_name, updated_by_user_name)
+                 VALUES (?, ?, ?, ?, ?, ?,
+                         ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                    name = excluded.name,
                    parent_id = excluded.parent_id,
                    is_active = excluded.is_active,
-                   updated_at = excluded.updated_at",
+                   updated_at = excluded.updated_at,
+                   updated_by_user_id = excluded.updated_by_user_id,
+                   updated_by_user_name = excluded.updated_by_user_name",
             )
             .bind(cat.id)
             .bind(&cat.name)
@@ -107,6 +117,8 @@ impl SnapshotWriter {
             .bind(cat.is_active)
             .bind(&now)
             .bind(&cat.updated_at)
+            .bind(&cat.created_by_user_id).bind(&cat.updated_by_user_id)
+            .bind(&cat.created_by_user_name).bind(&cat.updated_by_user_name)
             .execute(&mut *tx)
             .await
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;
@@ -126,13 +138,17 @@ impl SnapshotWriter {
         let now = now_str();
         for unit in units {
             sqlx::query(
-                "INSERT INTO units (id, name, symbol, is_active, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)
+                "INSERT INTO units (id, name, symbol, is_active, created_at, updated_at,
+                                    created_by_user_id, updated_by_user_id, created_by_user_name, updated_by_user_name)
+                 VALUES (?, ?, ?, ?, ?, ?,
+                         ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                    name = excluded.name,
                    symbol = excluded.symbol,
                    is_active = excluded.is_active,
-                   updated_at = excluded.updated_at",
+                   updated_at = excluded.updated_at,
+                   updated_by_user_id = excluded.updated_by_user_id,
+                   updated_by_user_name = excluded.updated_by_user_name",
             )
             .bind(unit.id)
             .bind(&unit.name)
@@ -140,6 +156,8 @@ impl SnapshotWriter {
             .bind(unit.is_active)
             .bind(&now)
             .bind(&unit.updated_at)
+            .bind(&unit.created_by_user_id).bind(&unit.updated_by_user_id)
+            .bind(&unit.created_by_user_name).bind(&unit.updated_by_user_name)
             .execute(&mut *tx)
             .await
             .map_err(|e| crate::error::CoreError::Database(format!("{e}")))?;

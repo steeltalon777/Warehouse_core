@@ -134,6 +134,8 @@
 | `run_stock_summary` | `pub async fn run_stock_summary(&mut self) -> CoreResult<PaginatedResponse<StockSummaryRow>>` | Fetch stock summary report from SyncServer (online). |
 | `run_item_movement` | `pub async fn run_item_movement(&mut self) -> CoreResult<PaginatedResponse<ItemMovementRow>>` | Fetch item movement report from SyncServer (online). |
 
+> **Note:** `documents_create_for_operation` (POST `/documents/operations/{op_id}/documents`) exists only in the HTTP client (`SyncServerClient`). It is **not exposed via the facade** yet — use the raw HTTP client for direct calls.
+
 ## Drafts
 
 | Method | Signature | Description |

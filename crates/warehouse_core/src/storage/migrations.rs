@@ -47,6 +47,11 @@ pub fn all_migrations() -> Vec<Migration> {
             description: "Report cache operation_id INTEGER → TEXT for UUID support",
             sql: include_str!("../../../../migrations/sqlite/0007_report_operation_id_text.sql"),
         },
+        Migration {
+            version: 8,
+            description: "Add catalog audit user fields (created_by_user_id, updated_by_user_id, created_by_user_name, updated_by_user_name)",
+            sql: include_str!("../../../../migrations/sqlite/0008_catalog_audit_fields.sql"),
+        },
     ]
 }
 
@@ -158,7 +163,8 @@ mod tests {
         assert!(applied.contains(&5));
         assert!(applied.contains(&6));
         assert!(applied.contains(&7));
-        assert_eq!(applied.len(), 7);
+        assert!(applied.contains(&8));
+        assert_eq!(applied.len(), 8);
     }
 
     #[tokio::test]
@@ -175,6 +181,6 @@ mod tests {
         let pool = test_pool().await;
         run_migrations(&pool).await.unwrap();
         let v = current_version(&pool).await.unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
     }
 }

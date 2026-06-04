@@ -148,7 +148,7 @@ Balances are sync-pulled into local SQLite. `balances_summary` goes directly to 
 | 60 | `/documents` | GET | `documents_list()` | `list_documents()` (local) | ❌ | ✅ |
 | 61 | `/documents/{id}/status` | PATCH | `documents_update_status()` | ❌ | ❌ | ✅ (client only) |
 | 62 | `/documents/operations/{op_id}/documents` | GET | `documents_for_operation()` | `list_operation_documents()` | ❌ | ✅ |
-| 63 | `/documents/operations/{op_id}/documents` | POST | ❌ | ❌ | ❌ | ❌ |
+| 63 | `/documents/operations/{op_id}/documents` | POST | `documents_create_for_operation()` | ❌ | ❌ | ✅ (client only) |
 
 ---
 
@@ -302,7 +302,7 @@ Feature-gated behind `#[cfg(feature = "admin-api")]`. Admin client methods exist
 | Operations | 9 | 4 | 5 | 1 | 0 |
 | Balances | 3 | 1 | 2 | 1 | 0 |
 | Temporary Items | 6 | 0 | 6 | 3 | 0 |
-| Documents | 7 | 1 | 5 | 2 | 1 |
+| Documents | 7 | 2 | 5 | 2 | 0 |
 | Recipients (legacy) | 6 | 4 | 2 | 2 | 0 |
 | Asset Registers | 5 | 1 | 4 | 4 | 0 |
 | Reports | 2 | 0 | 2 | 2 | 0 |
@@ -310,12 +310,12 @@ Feature-gated behind `#[cfg(feature = "admin-api")]`. Admin client methods exist
 | Device Sync | 4 | 3 | 1 | 1 | 0 |
 | Admin | 21 | 11 | 0 | 0 | 10 |
 | Review Items | 6 | 0 | 0 | 0 | 6 |
-| **Total** | **120** | **34** | **46** | **31** | **40** |
+| **Total** | **120** | **35** | **46** | **31** | **39** |
 
 - **Facade + FFI Ready (full stack):** 31 endpoints — HTTP client → Facade → FFI export
 - **Facade Only (no FFI):** 15 endpoints — HTTP client → Facade, but no FFI export
-- **Client Only (no facade/FFI):** 34 endpoints — HTTP client method exists, but not exposed through Facade/FFI
-- **Missing:** 40 endpoints
+- **Client Only (no facade/FFI):** 35 endpoints — HTTP client method exists, but not exposed through Facade/FFI
+- **Missing:** 39 endpoints
 
 ## Key Observations
 
@@ -326,4 +326,4 @@ Feature-gated behind `#[cfg(feature = "admin-api")]`. Admin client methods exist
 5. **Browse catalog read endpoints** are not implemented as HTTP calls — the front-end reads from local SQLite populated by pull-sync.
 6. **Review Items API** is a new group discovered in the live OpenAPI spec with no client implementation at all.
 7. **Recipients API** is legacy — the server replaced it with Issue Objects, but the core client still has full HTTP coverage.
-8. **Missing endpoints from OpenAPI:** `/admin/roles`, `/admin/access/scopes` (CRUD), `/admin/users/{id}/sync-state`, `/admin/users/{id}/scopes`, all 5 browse catalog endpoints, `/documents/operations/{op_id}/documents` POST shortcut, `/health/readiness`, all 6 review items, `/catalog/admin/batch`.
+8. **Missing endpoints from OpenAPI:** `/admin/roles`, `/admin/access/scopes` (CRUD), `/admin/users/{id}/sync-state`, `/admin/users/{id}/scopes`, all 5 browse catalog endpoints, `/health/readiness`, all 6 review items, `/catalog/admin/batch`.
