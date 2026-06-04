@@ -47,6 +47,13 @@ pub struct DocumentDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentCreateForOperationRequest {
+    pub template_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentGenerateRequest {
     pub operation_id: uuid::Uuid,
     pub document_type: DocumentType,

@@ -1,5 +1,7 @@
 use super::client::{AuthKind, SyncServerClient};
-use crate::domain::documents::{DocumentDto, DocumentGenerateRequest};
+use crate::domain::documents::{
+    DocumentCreateForOperationRequest, DocumentDto, DocumentGenerateRequest,
+};
 use crate::domain::pagination::PaginatedResponse;
 use crate::error::CoreResult;
 
@@ -76,6 +78,21 @@ impl SyncServerClient {
             &format!("/api/v1/documents/operations/{operation_id}/documents"),
             AuthKind::User,
         );
+        self.send(req).await
+    }
+
+    /// POST /api/v1/documents/operations/{operation_id}/documents — create a document for an operation
+    pub async fn documents_create_for_operation(
+        &self,
+        operation_id: uuid::Uuid,
+        body: &DocumentCreateForOperationRequest,
+    ) -> CoreResult<DocumentDto> {
+        let req = self
+            .post(
+                &format!("/api/v1/documents/operations/{operation_id}/documents"),
+                AuthKind::User,
+            )
+            .json(body);
         self.send(req).await
     }
 }
