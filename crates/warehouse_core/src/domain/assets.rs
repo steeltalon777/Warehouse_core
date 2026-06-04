@@ -8,15 +8,26 @@ pub struct PendingAcceptanceRow {
     #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
     pub operation_line_id: String,
     pub item_id: i32,
+    /// API returns both `display_name` and `item_name`; we use item_name directly.
+    #[serde(default)]
     pub item_name: String,
     #[serde(default)]
     pub item_sku: Option<String>,
+    #[serde(default)]
     pub unit_symbol: String,
     pub qty: serde_json::Value,
     #[serde(default)]
     pub accepted_qty: Option<serde_json::Value>,
     #[serde(default)]
     pub lost_qty: Option<serde_json::Value>,
+    #[serde(default)]
+    pub destination_site_id: Option<i32>,
+    #[serde(default)]
+    pub source_site_id: Option<i32>,
+    #[serde(default)]
+    pub inventory_subject_id: Option<i32>,
+    #[serde(default)]
+    pub subject_type: Option<String>,
 }
 
 /// Row from /lost-assets

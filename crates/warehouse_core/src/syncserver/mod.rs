@@ -8,6 +8,7 @@ mod client;
 mod device_sync;
 mod documents;
 mod health;
+mod issue_objects;
 mod operations;
 mod recipients;
 mod reports;

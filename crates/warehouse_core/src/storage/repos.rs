@@ -195,6 +195,10 @@ impl CatalogRepo for SqliteCatalogRepo {
                 hashtags,
                 updated_at,
                 created_at: Some(r.updated_at),
+                created_by_user_id: None,
+                updated_by_user_id: None,
+                created_by_user_name: None,
+                updated_by_user_name: None,
             }
         }))
     }
@@ -237,6 +241,10 @@ impl CatalogRepo for SqliteCatalogRepo {
                     hashtags,
                     updated_at,
                     created_at: Some(r.updated_at),
+                    created_by_user_id: None,
+                    updated_by_user_id: None,
+                    created_by_user_name: None,
+                    updated_by_user_name: None,
                 }
             })
             .collect())
@@ -265,6 +273,10 @@ impl CatalogRepo for SqliteCatalogRepo {
                 parent_id: r.parent_id,
                 is_active: r.is_active,
                 updated_at: r.updated_at,
+                created_by_user_id: None,
+                updated_by_user_id: None,
+                created_by_user_name: None,
+                updated_by_user_name: None,
             })
             .collect())
     }
@@ -292,6 +304,10 @@ impl CatalogRepo for SqliteCatalogRepo {
                 symbol: r.symbol,
                 is_active: r.is_active,
                 updated_at: r.updated_at,
+                created_by_user_id: None,
+                updated_by_user_id: None,
+                created_by_user_name: None,
+                updated_by_user_name: None,
             })
             .collect())
     }
@@ -1181,6 +1197,10 @@ impl AssetsRepo for SqliteAssetsRepo {
                 qty: serde_json::Value::String(r.get::<String, _>(4)),
                 accepted_qty: r.get::<Option<String>, _>(5).map(serde_json::Value::String),
                 lost_qty: r.get::<Option<String>, _>(6).map(serde_json::Value::String),
+                destination_site_id: None,
+                source_site_id: None,
+                inventory_subject_id: None,
+                subject_type: None,
             })
             .collect())
     }
@@ -1981,6 +2001,90 @@ impl ReportsRepo for SqliteReportsRepo {
     }
 }
 
+// ── SyncRunRepo ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SqliteSyncRunRepo {
+    pool: SqlitePool,
+}
+
+impl SqliteSyncRunRepo {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn insert_sync_run(&self, summary: &crate::sync::SyncRunSummary) -> CoreResult<()> {
+        let status = if summary.errors_count > 0 {
+            "completed_with_errors"
+        } else {
+            "completed"
+        };
+        let families_json = serde_json::to_string(&summary.families).map_err(|e| map_err!(e))?;
+        let mode = "pull"; // default when backfilling from PullSyncService
+        sqlx::query(
+            "INSERT OR REPLACE INTO sync_runs (run_id, started_at, finished_at, status, push_count, pull_count, error_count, error, families_json, mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&summary.run_id)
+        .bind(&summary.started_at)
+        .bind(&summary.completed_at)
+        .bind(status)
+        .bind(0i64) // push_count not tracked by pull-only
+        .bind(summary.total_items as i64)
+        .bind(summary.errors_count as i64)
+        .bind(summary.errors().first().map(|s| s.to_string()))
+        .bind(&families_json)
+        .bind(mode)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_err!(e))?;
+        Ok(())
+    }
+
+    pub async fn list_sync_runs(&self, limit: i32) -> CoreResult<Vec<crate::sync::SyncRunSummary>> {
+        #[derive(sqlx::FromRow)]
+        #[allow(dead_code)]
+        struct Row {
+            run_id: String,
+            started_at: String,
+            finished_at: Option<String>,
+            status: String,
+            pull_count: i64,
+            error_count: i64,
+            error: Option<String>,
+            families_json: Option<String>,
+            mode: Option<String>,
+        }
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT run_id, started_at, finished_at, status, pull_count, error_count, error, families_json, mode
+             FROM sync_runs ORDER BY started_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| map_err!(e))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let families_json = r.families_json.unwrap_or_default();
+                let families: Vec<crate::sync::FamilyResult> =
+                    serde_json::from_str(&families_json).unwrap_or_default();
+                let is_complete = r.status != "running";
+                crate::sync::SyncRunSummary {
+                    run_id: r.run_id,
+                    started_at: r.started_at,
+                    completed_at: r.finished_at,
+                    families,
+                    total_items: r.pull_count as usize,
+                    errors_count: r.error_count as usize,
+                    is_complete,
+                }
+            })
+            .collect())
+    }
+}
+
 // ── RepoBag: all repos in one struct ────────────────────────────
 
 #[derive(Clone)]
@@ -2015,5 +2119,709 @@ impl RepoBag {
             documents: SqliteDocumentRepo::new(pool.clone()),
             reports: SqliteReportsRepo::new(pool),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::operation::{OperationDraft, OperationDraftLine, OperationType};
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create test pool");
+        crate::storage::migrations::run_migrations(&pool)
+            .await
+            .expect("Migrations failed");
+        pool
+    }
+
+    // ── CatalogRepo tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_catalog_insert_and_get_unit() {
+        let pool = test_pool().await;
+        let repo = SqliteCatalogRepo::new(pool);
+        let unit = crate::domain::catalog::UnitDto {
+            id: 1,
+            name: "штука".into(),
+            symbol: "шт".into(),
+            is_active: true,
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            created_by_user_id: None,
+            updated_by_user_id: None,
+            created_by_user_name: None,
+            updated_by_user_name: None,
+        };
+        repo.upsert_unit(&unit).await.unwrap();
+        let all = repo.all_units().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "штука");
+        assert_eq!(all[0].symbol, "шт");
+    }
+
+    #[tokio::test]
+    async fn test_catalog_insert_and_get_category() {
+        let pool = test_pool().await;
+        let repo = SqliteCatalogRepo::new(pool);
+        let cat = crate::domain::catalog::CategoryDto {
+            id: 1,
+            name: "Электроника".into(),
+            parent_id: None,
+            is_active: true,
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            created_by_user_id: None,
+            updated_by_user_id: None,
+            created_by_user_name: None,
+            updated_by_user_name: None,
+        };
+        repo.upsert_category(&cat).await.unwrap();
+        let all = repo.all_categories().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "Электроника");
+    }
+
+    #[tokio::test]
+    async fn test_catalog_insert_and_get_item() {
+        let pool = test_pool().await;
+        let repo = SqliteCatalogRepo::new(pool);
+        let unit = crate::domain::catalog::UnitDto {
+            id: 1,
+            name: "штука".into(),
+            symbol: "шт".into(),
+            is_active: true,
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            created_by_user_id: None,
+            updated_by_user_id: None,
+            created_by_user_name: None,
+            updated_by_user_name: None,
+        };
+        let cat = crate::domain::catalog::CategoryDto {
+            id: 1,
+            name: "Инструменты".into(),
+            parent_id: None,
+            is_active: true,
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            created_by_user_id: None,
+            updated_by_user_id: None,
+            created_by_user_name: None,
+            updated_by_user_name: None,
+        };
+        repo.upsert_unit(&unit).await.unwrap();
+        repo.upsert_category(&cat).await.unwrap();
+        let item = crate::domain::catalog::ItemDto {
+            id: 1,
+            sku: Some("SKU-001".into()),
+            name: "Молоток".into(),
+            category_id: 1,
+            unit_id: 1,
+            description: Some("Ударный инструмент".into()),
+            is_active: true,
+            hashtags: Some(vec!["tool".into()]),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            created_at: Some("2024-01-01T00:00:00Z".into()),
+            created_by_user_id: None,
+            updated_by_user_id: None,
+            created_by_user_name: None,
+            updated_by_user_name: None,
+        };
+        repo.upsert_item(&item).await.unwrap();
+        let got = repo.get_item(1).await.unwrap().expect("Item not found");
+        assert_eq!(got.name, "Молоток");
+        assert_eq!(got.sku, Some("SKU-001".into()));
+        assert_eq!(got.category_id, 1);
+        assert_eq!(got.unit_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_catalog_search_items() {
+        let pool = test_pool().await;
+        let repo = SqliteCatalogRepo::new(pool);
+        let unit = crate::domain::catalog::UnitDto {
+            id: 1,
+            name: "штука".into(),
+            symbol: "шт".into(),
+            is_active: true,
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            created_by_user_id: None,
+            updated_by_user_id: None,
+            created_by_user_name: None,
+            updated_by_user_name: None,
+        };
+        let cat = crate::domain::catalog::CategoryDto {
+            id: 1,
+            name: "Test".into(),
+            parent_id: None,
+            is_active: true,
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            created_by_user_id: None,
+            updated_by_user_id: None,
+            created_by_user_name: None,
+            updated_by_user_name: None,
+        };
+        repo.upsert_unit(&unit).await.unwrap();
+        repo.upsert_category(&cat).await.unwrap();
+        for i in 1..=5 {
+            let item = crate::domain::catalog::ItemDto {
+                id: i,
+                sku: Some(format!("SKU-{i:03}")),
+                name: format!("Searchable Item {i}"),
+                category_id: 1,
+                unit_id: 1,
+                description: None,
+                is_active: true,
+                hashtags: None,
+                updated_at: "2024-01-01T00:00:00Z".into(),
+                created_at: Some("2024-01-01T00:00:00Z".into()),
+                created_by_user_id: None,
+                updated_by_user_id: None,
+                created_by_user_name: None,
+                updated_by_user_name: None,
+            };
+            repo.upsert_item(&item).await.unwrap();
+        }
+        let results = repo.search_items("Searchable").await.unwrap();
+        assert_eq!(results.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_catalog_search_items_no_match() {
+        let pool = test_pool().await;
+        let repo = SqliteCatalogRepo::new(pool);
+        let results = repo.search_items("NonExistent").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_catalog_all_categories() {
+        let pool = test_pool().await;
+        let repo = SqliteCatalogRepo::new(pool);
+        for i in 1..=3 {
+            let cat = crate::domain::catalog::CategoryDto {
+                id: i,
+                name: format!("Cat {i}"),
+                parent_id: if i > 1 { Some(1) } else { None },
+                is_active: true,
+                updated_at: "2024-01-01T00:00:00Z".into(),
+                created_by_user_id: None,
+                updated_by_user_id: None,
+                created_by_user_name: None,
+                updated_by_user_name: None,
+            };
+            repo.upsert_category(&cat).await.unwrap();
+        }
+        let all = repo.all_categories().await.unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_catalog_all_units() {
+        let pool = test_pool().await;
+        let repo = SqliteCatalogRepo::new(pool);
+        for i in 1..=3 {
+            let unit = crate::domain::catalog::UnitDto {
+                id: i,
+                name: format!("Unit {i}"),
+                symbol: format!("U{i}"),
+                is_active: true,
+                updated_at: "2024-01-01T00:00:00Z".into(),
+                created_by_user_id: None,
+                updated_by_user_id: None,
+                created_by_user_name: None,
+                updated_by_user_name: None,
+            };
+            repo.upsert_unit(&unit).await.unwrap();
+        }
+        let all = repo.all_units().await.unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    // ── BalanceRepo tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_balance_insert_and_get_by_site() {
+        let pool = test_pool().await;
+        let repo = SqliteBalanceRepo::new(pool.clone());
+        sqlx::query("INSERT INTO inventory_subjects (id, item_id, subject_type) VALUES (?, ?, ?)")
+            .bind(1i32)
+            .bind(1i32)
+            .bind("catalog_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        repo.upsert_balance(1, 1, "10.5").await.unwrap();
+        let rows = repo.get_by_site(1).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].qty, serde_json::json!("10.5"));
+    }
+
+    #[tokio::test]
+    async fn test_balance_get_by_item() {
+        let pool = test_pool().await;
+        let repo = SqliteBalanceRepo::new(pool.clone());
+        sqlx::query("INSERT INTO inventory_subjects (id, item_id, subject_type) VALUES (?, ?, ?)")
+            .bind(1i32)
+            .bind(42i32)
+            .bind("catalog_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        repo.upsert_balance(1, 1, "7").await.unwrap();
+        let rows = repo.get_by_item(42).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].site_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_balance_empty_for_site() {
+        let pool = test_pool().await;
+        let repo = SqliteBalanceRepo::new(pool);
+        let rows = repo.get_by_site(999).await.unwrap();
+        assert!(rows.is_empty());
+    }
+
+    // ── AssetsRepo tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_pending_acceptance_crud() {
+        let pool = test_pool().await;
+        let repo = SqliteAssetsRepo::new(pool.clone());
+        sqlx::query("INSERT INTO inventory_subjects (id, item_id, subject_type) VALUES (?, ?, ?)")
+            .bind(1i32)
+            .bind(1i32)
+            .bind("catalog_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let row = crate::domain::assets::PendingAcceptanceRow {
+            operation_id: "op-1".into(),
+            operation_line_id: "line-1".into(),
+            item_id: 1,
+            item_name: "Test Asset".into(),
+            item_sku: None,
+            unit_symbol: "шт".into(),
+            qty: serde_json::json!("5"),
+            accepted_qty: Some(serde_json::json!("3")),
+            lost_qty: None,
+            destination_site_id: None,
+            source_site_id: None,
+            inventory_subject_id: Some(1),
+            subject_type: Some("catalog_item".into()),
+        };
+        repo.upsert_pending_acceptance(&row, 1, 1).await.unwrap();
+        let list = repo.get_pending_acceptance().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].operation_id, "op-1");
+    }
+
+    #[tokio::test]
+    async fn test_lost_assets_crud() {
+        let pool = test_pool().await;
+        let repo = SqliteAssetsRepo::new(pool.clone());
+        sqlx::query("INSERT INTO inventory_subjects (id, item_id, subject_type) VALUES (?, ?, ?)")
+            .bind(1i32)
+            .bind(1i32)
+            .bind("catalog_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let row = crate::domain::assets::LostAssetRow {
+            operation_id: "op-2".into(),
+            operation_line_id: "line-2".into(),
+            item_id: 1,
+            item_name: "Lost Item".into(),
+            item_sku: None,
+            unit_symbol: "шт".into(),
+            qty: serde_json::json!("2"),
+            lost_qty: serde_json::json!("2"),
+            is_resolved: false,
+        };
+        repo.upsert_lost_asset(&row, 1, 1).await.unwrap();
+        let list = repo.get_lost_assets().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].operation_id, "op-2");
+    }
+
+    #[tokio::test]
+    async fn test_issued_assets_crud() {
+        let pool = test_pool().await;
+        let repo = SqliteAssetsRepo::new(pool.clone());
+        sqlx::query("INSERT INTO inventory_subjects (id, item_id, subject_type) VALUES (?, ?, ?)")
+            .bind(1i32)
+            .bind(1i32)
+            .bind("catalog_item")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let row = crate::domain::assets::IssuedAssetRow {
+            operation_id: "op-3".into(),
+            operation_line_id: "line-3".into(),
+            item_id: 1,
+            item_name: "Issued Item".into(),
+            item_sku: None,
+            unit_symbol: "шт".into(),
+            qty: serde_json::json!("1"),
+            issued_to_name: "Иван".into(),
+        };
+        repo.upsert_issued_asset(&row, 1, 1).await.unwrap();
+        let list = repo.get_issued_assets().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].issued_to_name, "Иван");
+    }
+
+    // ── RecipientRepo tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_recipient_insert_and_get() {
+        let pool = test_pool().await;
+        let repo = SqliteRecipientRepo::new(pool);
+        let r = crate::domain::recipient::RecipientDto {
+            id: 1,
+            name: "ООО Поставщик".into(),
+            recipient_type: crate::domain::recipient::RecipientType::Contractor,
+            contact_info: Some("contact@supplier.ru".into()),
+            is_active: true,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+        };
+        repo.upsert(&r).await.unwrap();
+        let got = repo.get(1).await.unwrap().expect("Recipient not found");
+        assert_eq!(got.name, "ООО Поставщик");
+        assert_eq!(
+            got.recipient_type,
+            crate::domain::recipient::RecipientType::Contractor
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recipient_search() {
+        let pool = test_pool().await;
+        let repo = SqliteRecipientRepo::new(pool);
+        for i in 1..=3 {
+            let r = crate::domain::recipient::RecipientDto {
+                id: i,
+                name: format!("SearchRecipient {i}"),
+                recipient_type: crate::domain::recipient::RecipientType::Person,
+                contact_info: None,
+                is_active: true,
+                created_at: "2024-01-01T00:00:00Z".into(),
+                updated_at: "2024-01-01T00:00:00Z".into(),
+            };
+            repo.upsert(&r).await.unwrap();
+        }
+        let results = repo.search("SearchRecipient").await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_recipient_not_found() {
+        let pool = test_pool().await;
+        let repo = SqliteRecipientRepo::new(pool);
+        let got = repo.get(999).await.unwrap();
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recipient_delete() {
+        let pool = test_pool().await;
+        let repo = SqliteRecipientRepo::new(pool);
+        let r = crate::domain::recipient::RecipientDto {
+            id: 1,
+            name: "ToDelete".into(),
+            recipient_type: crate::domain::recipient::RecipientType::Person,
+            contact_info: None,
+            is_active: true,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+        };
+        repo.upsert(&r).await.unwrap();
+        repo.delete_by_id(1).await.unwrap();
+        let got = repo.get(1).await.unwrap();
+        assert!(got.is_none());
+    }
+
+    // ── DraftRepo tests ───────────────────────────────────────────
+
+    fn sample_draft() -> OperationDraft {
+        OperationDraft {
+            draft_id: uuid::Uuid::new_v4(),
+            operation_type: OperationType::Receive,
+            site_id: Some(1),
+            lines: vec![OperationDraftLine {
+                line_id: uuid::Uuid::new_v4(),
+                item_id: Some(1),
+                temporary_item: None,
+                qty: serde_json::json!("10"),
+                batch: None,
+                comment: None,
+            }],
+            effective_at: None,
+            source_site_id: None,
+            destination_site_id: None,
+            recipient_id: None,
+            issued_to_name: None,
+            comment: None,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_draft_create_and_get() {
+        let pool = test_pool().await;
+        let repo = SqliteDraftRepo::new(pool);
+        let draft = sample_draft();
+        repo.save(&draft).await.unwrap();
+        let got = repo
+            .get(&draft.draft_id.to_string())
+            .await
+            .unwrap()
+            .expect("Draft not found");
+        assert_eq!(got.operation_type, OperationType::Receive);
+        assert_eq!(got.site_id, Some(1));
+        assert_eq!(got.lines.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_draft_list() {
+        let pool = test_pool().await;
+        let repo = SqliteDraftRepo::new(pool);
+        for _ in 0..3 {
+            repo.save(&sample_draft()).await.unwrap();
+        }
+        let list = repo.list().await.unwrap();
+        assert_eq!(list.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_draft_delete() {
+        let pool = test_pool().await;
+        let repo = SqliteDraftRepo::new(pool);
+        let draft = sample_draft();
+        repo.save(&draft).await.unwrap();
+        repo.delete(&draft.draft_id.to_string()).await.unwrap();
+        let got = repo.get(&draft.draft_id.to_string()).await.unwrap();
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_draft_clone() {
+        let pool = test_pool().await;
+        let repo = SqliteDraftRepo::new(pool);
+        let draft = sample_draft();
+        repo.save(&draft).await.unwrap();
+        let original_id = draft.draft_id;
+
+        // Clone manually: new UUID, same lines
+        let cloned = OperationDraft {
+            draft_id: uuid::Uuid::new_v4(),
+            created_at: "2024-02-01T00:00:00Z".into(),
+            updated_at: "2024-02-01T00:00:00Z".into(),
+            lines: draft
+                .lines
+                .into_iter()
+                .map(|l| OperationDraftLine {
+                    line_id: uuid::Uuid::new_v4(),
+                    ..l
+                })
+                .collect(),
+            ..draft
+        };
+        repo.save(&cloned).await.unwrap();
+
+        let orig_got = repo.get(&original_id.to_string()).await.unwrap();
+        assert!(orig_got.is_some());
+        let clone_got = repo
+            .get(&cloned.draft_id.to_string())
+            .await
+            .unwrap()
+            .expect("Clone not found");
+        assert_eq!(clone_got.lines.len(), 1);
+        assert_ne!(clone_got.draft_id, original_id);
+    }
+
+    // ── OutboxRepo tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_outbox_enqueue_and_list() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        repo.enqueue("test_type", "test_cmd", 1, r#"{"key":"val"}"#, None, None)
+            .await
+            .unwrap();
+        repo.enqueue(
+            "test_type2",
+            "test_cmd2",
+            1,
+            r#"{"key2":"val2"}"#,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let list = repo.list(Some(1), None).await.unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_outbox_mark_sending() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        let uuid = repo
+            .enqueue("op", "cmd", 1, "{}", None, None)
+            .await
+            .unwrap();
+        repo.mark_sending(&uuid).await.unwrap();
+        let ev = repo.get(&uuid).await.unwrap().expect("Event not found");
+        assert_eq!(ev.status, "sending");
+    }
+
+    #[tokio::test]
+    async fn test_outbox_mark_success() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        let uuid = repo
+            .enqueue("op", "cmd", 1, "{}", None, None)
+            .await
+            .unwrap();
+        repo.mark_sending(&uuid).await.unwrap();
+        repo.mark_success(&uuid).await.unwrap();
+        let ev = repo.get(&uuid).await.unwrap().expect("Event not found");
+        assert_eq!(ev.status, "accepted");
+    }
+
+    #[tokio::test]
+    async fn test_outbox_mark_failed() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        let uuid = repo
+            .enqueue("op", "cmd", 1, "{}", None, None)
+            .await
+            .unwrap();
+        repo.mark_failed(&uuid, "timeout").await.unwrap();
+        let ev = repo.get(&uuid).await.unwrap().expect("Event not found");
+        assert_eq!(ev.retry_count, 1);
+        assert_eq!(ev.last_error.as_deref(), Some("timeout"));
+    }
+
+    #[tokio::test]
+    async fn test_outbox_mark_conflict() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        let uuid = repo
+            .enqueue("op", "cmd", 1, "{}", None, None)
+            .await
+            .unwrap();
+        repo.mark_conflict(&uuid, "conflict").await.unwrap();
+        let ev = repo.get(&uuid).await.unwrap().expect("Event not found");
+        assert_eq!(ev.status, "conflict");
+        assert_eq!(ev.last_error.as_deref(), Some("conflict"));
+    }
+
+    #[tokio::test]
+    async fn test_outbox_cancel() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        let uuid = repo
+            .enqueue("op", "cmd", 1, "{}", None, None)
+            .await
+            .unwrap();
+        repo.cancel_event(&uuid).await.unwrap();
+        let ev = repo.get(&uuid).await.unwrap().expect("Event not found");
+        assert_eq!(ev.status, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn test_outbox_retry() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        let uuid = repo
+            .enqueue("op", "cmd", 1, "{}", None, None)
+            .await
+            .unwrap();
+        repo.mark_failed(&uuid, "err").await.unwrap();
+        repo.retry_event(&uuid).await.unwrap();
+        let ev = repo.get(&uuid).await.unwrap().expect("Event not found");
+        assert_eq!(ev.status, "pending");
+        assert_eq!(ev.retry_count, 0);
+        assert!(ev.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_outbox_count_pending() {
+        let pool = test_pool().await;
+        let repo = SqliteOutboxRepo::new(pool);
+        for _ in 0..5 {
+            repo.enqueue("op", "cmd", 1, "{}", None, None)
+                .await
+                .unwrap();
+        }
+        let count = repo.count_pending().await.unwrap();
+        assert_eq!(count, 5);
+        // Change one to sending, verify count drops
+        let list = repo.list(None, Some("pending")).await.unwrap();
+        repo.mark_sending(&list[0].event_uuid).await.unwrap();
+        let count2 = repo.count_pending().await.unwrap();
+        assert_eq!(count2, 4);
+    }
+
+    // ── SyncRunRepo tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_sync_run_insert_and_list() {
+        let pool = test_pool().await;
+        let repo = SqliteSyncRunRepo::new(pool);
+        let summary = crate::sync::SyncRunSummary {
+            run_id: "run-1".into(),
+            started_at: "2024-01-01T00:00:00Z".into(),
+            completed_at: Some("2024-01-01T00:01:00Z".into()),
+            families: vec![],
+            total_items: 10,
+            errors_count: 0,
+            is_complete: true,
+        };
+        repo.insert_sync_run(&summary).await.unwrap();
+        let list = repo.list_sync_runs(10).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].run_id, "run-1");
+        assert_eq!(list[0].total_items, 10);
+    }
+
+    #[tokio::test]
+    async fn test_sync_run_list_empty() {
+        let pool = test_pool().await;
+        let repo = SqliteSyncRunRepo::new(pool);
+        let list = repo.list_sync_runs(10).await.unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sync_run_multiple_inserts() {
+        let pool = test_pool().await;
+        let repo = SqliteSyncRunRepo::new(pool);
+        let runs = vec![
+            ("run-a", "2024-01-01T00:00:00Z"),
+            ("run-b", "2024-01-02T00:00:00Z"),
+            ("run-c", "2024-01-03T00:00:00Z"),
+        ];
+        for (rid, ts) in &runs {
+            let summary = crate::sync::SyncRunSummary {
+                run_id: rid.to_string(),
+                started_at: ts.to_string(),
+                completed_at: None,
+                families: vec![],
+                total_items: 0,
+                errors_count: 0,
+                is_complete: false,
+            };
+            repo.insert_sync_run(&summary).await.unwrap();
+        }
+        let list = repo.list_sync_runs(10).await.unwrap();
+        assert_eq!(list.len(), 3);
+        // Ordered by started_at DESC
+        assert_eq!(list[0].run_id, "run-c");
+        assert_eq!(list[1].run_id, "run-b");
+        assert_eq!(list[2].run_id, "run-a");
     }
 }

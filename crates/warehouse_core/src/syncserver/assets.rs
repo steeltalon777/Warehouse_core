@@ -19,7 +19,8 @@ struct RawPaginatedResponse<T> {
 #[derive(Debug, Deserialize)]
 struct RawLostAssetRow {
     operation_id: String,
-    operation_line_id: i64,
+    #[serde(deserialize_with = "crate::domain::serde_helpers::string_or_number")]
+    operation_line_id: String,
     inventory_subject_id: i32,
     item_id: Option<i32>,
     display_name: String,
@@ -29,12 +30,18 @@ struct RawLostAssetRow {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct RawIssuedAssetRow {
-    recipient_name: String,
-    inventory_subject_id: i32,
+    issue_object_id: Option<i32>,
+    issue_object_name: Option<String>,
+    issue_object_type: Option<String>,
+    inventory_subject_id: Option<i32>,
     item_id: Option<i32>,
+    #[serde(default)]
     display_name: String,
+    #[serde(default)]
     item_name: Option<String>,
+    #[serde(default)]
     sku: Option<String>,
     qty: serde_json::Value,
 }
@@ -44,7 +51,7 @@ impl From<RawLostAssetRow> for LostAssetRow {
         let qty = value.qty;
         Self {
             operation_id: value.operation_id,
-            operation_line_id: value.operation_line_id.to_string(),
+            operation_line_id: value.operation_line_id,
             item_id: value.item_id.unwrap_or(value.inventory_subject_id),
             item_name: value.item_name.unwrap_or(value.display_name),
             item_sku: value.sku,
@@ -58,15 +65,19 @@ impl From<RawLostAssetRow> for LostAssetRow {
 
 impl From<RawIssuedAssetRow> for IssuedAssetRow {
     fn from(value: RawIssuedAssetRow) -> Self {
+        // API returns issue-object-based data (no operation_id/line).
+        // Generate a synthetic PK from issue_object_id + inventory_subject_id.
+        let inv_id = value.inventory_subject_id.unwrap_or(0);
+        let obj_id = value.issue_object_id.unwrap_or(0);
         Self {
-            operation_id: String::new(),
-            operation_line_id: String::new(),
-            item_id: value.item_id.unwrap_or(value.inventory_subject_id),
+            operation_id: format!("issue_obj_{}", obj_id),
+            operation_line_id: format!("{}_{}", obj_id, inv_id),
+            item_id: value.item_id.unwrap_or(inv_id),
             item_name: value.item_name.unwrap_or(value.display_name),
             item_sku: value.sku,
             unit_symbol: String::new(),
             qty: value.qty,
-            issued_to_name: value.recipient_name,
+            issued_to_name: value.issue_object_name.unwrap_or_default(),
         }
     }
 }
@@ -113,9 +124,9 @@ impl SyncServerClient {
     }
 
     /// GET /lost-assets/{operation_line_id} — single lost asset row
-    pub async fn lost_assets_get(&self, operation_line_id: i64) -> CoreResult<LostAssetRow> {
+    pub async fn lost_assets_get(&self, operation_line_id: &str) -> CoreResult<LostAssetRow> {
         let req = self.get(
-            &format!("/api/v1/lost-assets/{operation_line_id}"),
+            &format!("/api/v1/lost-assets/{}", operation_line_id),
             AuthKind::User,
         );
         self.send(req).await
@@ -124,12 +135,12 @@ impl SyncServerClient {
     /// POST /lost-assets/{operation_line_id}/resolve — resolve a lost asset
     pub async fn lost_assets_resolve(
         &self,
-        operation_line_id: i64,
+        operation_line_id: &str,
         request: &LostAssetResolveRequest,
     ) -> CoreResult<serde_json::Value> {
         let req = self
             .post(
-                &format!("/api/v1/lost-assets/{operation_line_id}/resolve"),
+                &format!("/api/v1/lost-assets/{}/resolve", operation_line_id),
                 AuthKind::User,
             )
             .json(request);

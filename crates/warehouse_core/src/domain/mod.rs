@@ -13,6 +13,7 @@ pub mod auth;
 pub mod balance;
 pub mod catalog;
 pub mod documents;
+pub mod issue_objects;
 pub mod operation;
 pub mod pagination;
 pub mod recipient;

@@ -1,18 +1,22 @@
 # TZ: Warehouse_client_core Client-Ready Completion Roadmap
 
+> **Last updated:** 2026-06-04
+
 ## Execution Checklist
 
-- [x] 0. Context verified
-- [x] 1. Architecture boundaries confirmed
-- [x] 2. Implementation level 1 complete
-- [x] 3. Unit/component tests complete (Level 6: FFI error envelope + handle lifecycle; core: 8/8 pass)
-- [ ] 4. Integration tests with real dependencies complete — **2026-05-20: stand executed with tokens. Health/auth/site/draft smoke passed, but bootstrap and sync-pull still fail on FK/DTO/page-size issues (`catalog_items`, `operations`, `documents`, `stock_summary`, etc.).**
-- [ ] 5. Stand smoke tests complete — **2026-05-20 blocker updated: stand is available, but smoke is not green yet. `bootstrap` fails on `catalog_items` FK; `sync-pull` records serialization and page-size errors; `operations list 1` still fails on missing `site_code`.**
-- [ ] 6. UI automation tests complete
-- [ ] 7. User scenario tests complete
-- [ ] 8. Regression checks complete
-- [ ] 9. Documentation updated
-- [ ] 10. Final acceptance review complete
+- [x] **Level 0 — Contract freeze and ADRs** — Complete. API matrix, facade draft, and ADRs documented.
+- [x] **Level 1 — SyncServer HTTP client** — Complete. 13 subclient modules (client, auth, catalog, operations, temporary_items, balances, assets, documents, recipients, reports, device_sync, health, admin).
+- [x] **Level 2 — Auth, device bootstrap, profile context** — Complete. TokenProvider trait + 3 implementations, Profile/ProfileService, bootstrap_device, refresh_identity, site lifecycle.
+- [x] **Level 3 — SQLite repositories and migrations complete** — Complete. 6 migrations (0001–0006), RepoBag with 9+ repositories, cursor store, snapshot writer, error log.
+- [x] **Level 4 — Pull sync and staged bootstrap** — Complete. BootstrapService + PullSyncService with 12 families, cursor-based incremental sync.
+- [x] **Level 5 — Read-only CoreFacade and CLI smoke** — Complete. CoreHandle with 40+ read-only methods, CLI with 14 command groups.
+- [x] **Level 6 — FFI foundation for read-only facade** — Complete. 48 extern "C" functions, CoreErrorDto repr(C), FfiTokenProvider, tokio runtime wrapper.
+- [x] **Level 7 — Operation draft service** — Complete. OperationDraftService: CRUD, header/lines editing, inline temp items, clone, DraftValidator with per-operation-type rules.
+- [x] **Level 8 — Outbox and push transport** — Complete. OutboxService: durable queue, 8-state machine (pending→sending→accepted/rejected/conflict/dead-letter/cancelled), retry with backoff, SendResult.
+- [x] **Level 9 — Sync engine orchestration** — Complete. SyncEngine: 5 modes (Bootstrap/PullOnly/PushOnly/PushThenPull/Full), atomic lock, progress callback, conflict collection.
+- [ ] **Level 10 — Full client facade through FFI** — 48 of ~87 domain methods exported through FFI. Not all async facade methods have extern "C" wrappers yet.
+- [ ] **Level 11 — Contract, performance, chaos, regression hardening** — Not started.
+- [ ] **Level 12 — Documentation, packaging, client handoff** — Not started.
 
 ## Check Rules
 

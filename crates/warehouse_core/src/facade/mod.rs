@@ -8,6 +8,11 @@ use crate::domain::auth::AuthSiteInfo;
 use crate::domain::balance::{BalanceRow, BalanceSummaryRow};
 use crate::domain::catalog::{CategoryDto, CategoryTreeNode, ItemDto, UnitDto};
 use crate::domain::documents::{DocumentDto, DocumentGenerateRequest};
+use crate::domain::issue_objects::{
+    IssueObjectCategoryCreate, IssueObjectCategoryDto, IssueObjectCategoryUpdate,
+    IssueObjectCreate, IssueObjectDto, IssueObjectListResponse, IssueObjectMerge,
+    IssueObjectTreeDto, IssueObjectUpdate,
+};
 use crate::domain::operation::TemporaryItemInlineCreate;
 use crate::domain::operation::{
     AcceptLinesRequest, OperationDraft, OperationListItem, OperationType,
@@ -20,7 +25,7 @@ use crate::storage::Database;
 use crate::storage::cursor_store::CursorStore;
 use crate::storage::repos::{
     AssetsRepo, BalanceRepo, CatalogRepo, DocumentRepo, OutboxRepo, RecipientRepo, RepoBag,
-    SqliteAuthContextRepo, SqliteErrorLogRepo, TemporaryItemRepo,
+    SqliteAuthContextRepo, SqliteErrorLogRepo, SqliteSyncRunRepo, TemporaryItemRepo,
 };
 use crate::storage::snapshot_writer::SnapshotWriter;
 use crate::sync::{
@@ -51,6 +56,7 @@ pub struct CoreHandle {
     token_provider: Box<dyn TokenProvider>,
     last_sync_result: Option<SyncResult>,
     sync_lock: Arc<AtomicBool>,
+    cancel_requested: Arc<AtomicBool>,
 }
 
 impl CoreHandle {
@@ -65,6 +71,7 @@ impl CoreHandle {
             token_provider: Box::new(NullTokenProvider),
             last_sync_result: None,
             sync_lock: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -78,6 +85,7 @@ impl CoreHandle {
             token_provider: Box::new(NullTokenProvider),
             last_sync_result: None,
             sync_lock: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -328,7 +336,13 @@ impl CoreHandle {
     }
 
     pub async fn list_sync_runs(&self) -> CoreResult<Vec<SyncRunSummary>> {
-        Ok(Vec::new())
+        let repo = SqliteSyncRunRepo::new(self.db.pool().clone());
+        repo.list_sync_runs(20).await
+    }
+
+    pub fn cancel_sync(&self) {
+        self.cancel_requested.store(true, Ordering::Release);
+        self.sync_lock.store(false, Ordering::Release);
     }
 
     // ── Catalog ───────────────────────────────────────────────
@@ -713,12 +727,28 @@ impl CoreHandle {
                 };
             }
         };
+        self.cancel_requested.store(false, Ordering::Release);
         let pool = self.db.pool().clone();
         let profile = std::mem::take(&mut self.profile);
-        let mut engine = SyncEngine::new(client, pool, profile);
+        let mut engine = SyncEngine::new(client, pool.clone(), profile);
+        engine.set_cancel_flag(self.cancel_requested.clone());
         let result = engine.run(mode).await;
         self.profile = engine.into_profile();
         self.last_sync_result = Some(result.clone());
+
+        if result.error.as_deref() != Some("Sync cancelled") {
+            // Persist sync run summary
+            let mut summary = SyncRunSummary::new();
+            summary.completed_at = Some(crate::time::format_iso8601(crate::time::now_utc()));
+            summary.total_items = result.pull_items;
+            summary.errors_count = result.push_failed as usize
+                + result.pull_errors
+                + if result.error.is_some() { 1 } else { 0 };
+            summary.is_complete = result.success;
+            let repo = SqliteSyncRunRepo::new(pool);
+            let _ = repo.insert_sync_run(&summary).await;
+        }
+
         result
     }
 
@@ -776,12 +806,114 @@ impl CoreHandle {
 
     pub async fn resolve_lost_asset(
         &mut self,
-        operation_line_id: i64,
+        operation_line_id: &str,
         request: &LostAssetResolveRequest,
     ) -> CoreResult<serde_json::Value> {
         self.client()?
             .lost_assets_resolve(operation_line_id, request)
             .await
+    }
+
+    // ── Issue Objects ──────────────────────────────────────────────────
+
+    pub async fn list_issue_objects(
+        &mut self,
+        page: u32,
+        page_size: u32,
+        search: Option<&str>,
+    ) -> CoreResult<IssueObjectListResponse> {
+        self.client()?
+            .issue_objects_list(page, page_size, search)
+            .await
+    }
+
+    pub async fn get_issue_object(&mut self, id: i32) -> CoreResult<IssueObjectDto> {
+        self.client()?.issue_objects_get(id).await
+    }
+
+    pub async fn create_issue_object(
+        &mut self,
+        body: &IssueObjectCreate,
+    ) -> CoreResult<IssueObjectDto> {
+        self.client()?.issue_objects_create(body).await
+    }
+
+    pub async fn update_issue_object(
+        &mut self,
+        id: i32,
+        body: &IssueObjectUpdate,
+    ) -> CoreResult<IssueObjectDto> {
+        self.client()?.issue_objects_update(id, body).await
+    }
+
+    pub async fn delete_issue_object(&mut self, id: i32) -> CoreResult<()> {
+        self.client()?.issue_objects_delete(id).await
+    }
+
+    pub async fn merge_issue_objects(
+        &mut self,
+        body: &IssueObjectMerge,
+    ) -> CoreResult<IssueObjectDto> {
+        self.client()?.issue_objects_merge(body).await
+    }
+
+    pub async fn list_issue_object_assets(
+        &mut self,
+        id: i32,
+        page: u32,
+        page_size: u32,
+    ) -> CoreResult<PaginatedResponse<serde_json::Value>> {
+        self.client()?
+            .issue_objects_list_assets(id, page, page_size)
+            .await
+    }
+
+    pub async fn get_issue_object_tree(&mut self) -> CoreResult<Vec<IssueObjectTreeDto>> {
+        self.client()?.issue_objects_get_tree().await
+    }
+
+    pub async fn create_issue_object_category(
+        &mut self,
+        body: &IssueObjectCategoryCreate,
+    ) -> CoreResult<IssueObjectCategoryDto> {
+        self.client()?.issue_object_categories_create(body).await
+    }
+
+    pub async fn list_issue_object_categories(
+        &mut self,
+        page: u32,
+        page_size: u32,
+    ) -> CoreResult<PaginatedResponse<IssueObjectCategoryDto>> {
+        self.client()?
+            .issue_object_categories_list(page, page_size)
+            .await
+    }
+
+    pub async fn get_issue_object_category(
+        &mut self,
+        id: i32,
+    ) -> CoreResult<IssueObjectCategoryDto> {
+        self.client()?.issue_object_categories_get(id).await
+    }
+
+    pub async fn update_issue_object_category(
+        &mut self,
+        id: i32,
+        body: &IssueObjectCategoryUpdate,
+    ) -> CoreResult<IssueObjectCategoryDto> {
+        self.client()?
+            .issue_object_categories_update(id, body)
+            .await
+    }
+
+    pub async fn delete_issue_object_category(&mut self, id: i32) -> CoreResult<()> {
+        self.client()?.issue_object_categories_delete(id).await
+    }
+
+    // ── DELETE operation ───────────────────────────────────────────────
+
+    pub async fn delete_operation(&mut self, id: &str) -> CoreResult<()> {
+        self.client()?.operations_delete(id).await
     }
 }
 

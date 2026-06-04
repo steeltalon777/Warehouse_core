@@ -68,6 +68,7 @@ pub struct SyncEngine {
     pool: sqlx::SqlitePool,
     profile: ProfileService,
     is_syncing: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
     progress_cb: Option<ProgressCallback>,
 }
 
@@ -78,12 +79,17 @@ impl SyncEngine {
             pool,
             profile,
             is_syncing: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(AtomicBool::new(false)),
             progress_cb: None,
         }
     }
 
     pub fn set_progress_callback(&mut self, cb: ProgressCallback) {
         self.progress_cb = Some(cb);
+    }
+
+    pub fn set_cancel_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancelled = flag;
     }
 
     pub fn is_syncing(&self) -> bool {
@@ -96,6 +102,10 @@ impl SyncEngine {
 
     pub fn sync_lock(&self) -> Arc<AtomicBool> {
         self.is_syncing.clone()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
     }
 
     fn emit(&self, phase: SyncPhase, message: &str, pct: u8) {
@@ -116,10 +126,22 @@ impl SyncEngine {
             };
         }
 
+        self.cancelled.store(false, Ordering::SeqCst);
+
         let result = self.run_inner(mode).await;
 
         self.is_syncing.store(false, Ordering::SeqCst);
         result
+    }
+
+    fn check_cancelled(&self, result: &mut SyncResult) -> bool {
+        if self.cancelled.load(Ordering::SeqCst) {
+            result.error = Some("Sync cancelled".to_string());
+            self.emit(SyncPhase::Error, "Sync cancelled by user", 0);
+            true
+        } else {
+            false
+        }
     }
 
     async fn run_inner(&mut self, mode: SyncMode) -> SyncResult {
@@ -130,6 +152,9 @@ impl SyncEngine {
 
         // Phase: Ping (for non-bootstrap modes with device token)
         if mode != SyncMode::Bootstrap {
+            if self.check_cancelled(&mut result) {
+                return result;
+            }
             self.emit(SyncPhase::Ping, "Pinging server...", 5);
             if self.profile.is_authenticated() {
                 match self.client.health().await {
@@ -146,6 +171,9 @@ impl SyncEngine {
 
         // Phase: Push
         if mode == SyncMode::PushOnly || mode == SyncMode::PushThenPull || mode == SyncMode::Full {
+            if self.check_cancelled(&mut result) {
+                return result;
+            }
             self.emit(SyncPhase::Push, "Sending pending outbox events...", 20);
             let pool = self.pool.clone();
             let outbox_repo = SqliteOutboxRepo::new(pool.clone());
@@ -178,6 +206,9 @@ impl SyncEngine {
 
         // Phase: Bootstrap
         if mode == SyncMode::Bootstrap || mode == SyncMode::Full {
+            if self.check_cancelled(&mut result) {
+                return result;
+            }
             self.emit(SyncPhase::Bootstrap, "Bootstrapping...", 45);
             let pool = self.pool.clone();
             let auth_repo = SqliteAuthContextRepo::new(pool.clone());
@@ -206,6 +237,9 @@ impl SyncEngine {
 
         // Phase: Pull (skip if push-only or bootstrap-only)
         if mode == SyncMode::PullOnly || mode == SyncMode::PushThenPull || mode == SyncMode::Full {
+            if self.check_cancelled(&mut result) {
+                return result;
+            }
             self.emit(SyncPhase::Pull, "Pulling data...", 55);
             let pool = self.pool.clone();
             let cursor_store = CursorStore::new(pool.clone());
@@ -230,11 +264,11 @@ impl SyncEngine {
                 "catalog_categories",
                 "catalog_units",
             ];
-            let failed_required: Vec<&str> = summary
+            let failed_required: Vec<String> = summary
                 .families
                 .iter()
-                .filter(|f| !f.success && required_families.contains(&f.name))
-                .map(|f| f.name)
+                .filter(|f| !f.success && required_families.contains(&f.name.as_str()))
+                .map(|f| f.name.clone())
                 .collect();
             if !failed_required.is_empty() {
                 let msg = format!(

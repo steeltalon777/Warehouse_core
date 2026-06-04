@@ -61,6 +61,54 @@ unsafe fn verify_handle<'a>(
     unsafe { Ok(&mut *handle) }
 }
 
+macro_rules! block_on_void {
+    ($wrapper:expr, $h:ident.$method:ident($($args:tt)*)) => {{
+        let w: &mut CoreHandleWrapper = $wrapper;
+        let $h = &mut w.handle;
+        match w.runtime.block_on($h.$method($($args)*)) {
+            Ok(_) => CoreErrorDto::success(),
+            Err(e) => CoreErrorDto::from_error(&e),
+        }
+    }};
+    ($wrapper:expr, $call:expr) => {{
+        let w: &mut CoreHandleWrapper = $wrapper;
+        match w.runtime.block_on($call) {
+            Ok(_) => CoreErrorDto::success(),
+            Err(e) => CoreErrorDto::from_error(&e),
+        }
+    }};
+}
+
+macro_rules! block_on_json {
+    ($wrapper:expr, $h:ident.$method:ident($($args:tt)*), $out_json:expr) => {{
+        let w: &mut CoreHandleWrapper = $wrapper;
+        let $h = &mut w.handle;
+        match w.runtime.block_on($h.$method($($args)*)) {
+            Ok(r) => {
+                let json = serde_json::to_string(&r).unwrap_or_else(|_| "null".into());
+                if !$out_json.is_null() {
+                    *$out_json = string_to_c_str(json);
+                }
+                CoreErrorDto::success()
+            }
+            Err(e) => CoreErrorDto::from_error(&e),
+        }
+    }};
+    ($wrapper:expr, $call:expr, $out_json:expr) => {{
+        let w: &mut CoreHandleWrapper = $wrapper;
+        match w.runtime.block_on($call) {
+            Ok(r) => {
+                let json = serde_json::to_string(&r).unwrap_or_else(|_| "null".into());
+                if !$out_json.is_null() {
+                    *$out_json = string_to_c_str(json);
+                }
+                CoreErrorDto::success()
+            }
+            Err(e) => CoreErrorDto::from_error(&e),
+        }
+    }};
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn warehouse_init() {
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
@@ -184,6 +232,26 @@ pub unsafe extern "C" fn warehouse_refresh_identity(
         Ok(_) => CoreErrorDto::success(),
         Err(e) => CoreErrorDto::from_error(&e),
     }
+}
+
+// ── Profile ─────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_load_profile(handle: *mut CoreHandleWrapper) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_void!(wrapper, h.load_profile())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_logout(handle: *mut CoreHandleWrapper) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_void!(wrapper, h.logout())
 }
 
 #[unsafe(no_mangle)]
@@ -336,6 +404,35 @@ pub unsafe extern "C" fn warehouse_get_auth_context(
     }
 }
 
+// ── Recipients ──────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_search_recipients(
+    handle: *mut CoreHandleWrapper,
+    query: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let q = c_str_to_string(query).unwrap_or_default();
+    block_on_json!(wrapper, h.search_recipients(&q), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_get_recipient(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(wrapper, h.get_recipient(id), out_json)
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn warehouse_search_catalog(
     handle: *mut CoreHandleWrapper,
@@ -424,6 +521,32 @@ pub unsafe extern "C" fn warehouse_list_operations(
         }
         Err(e) => CoreErrorDto::from_error(&e),
     }
+}
+
+// ── Reports ─────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_stock_summary(
+    handle: *mut CoreHandleWrapper,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(wrapper, h.run_stock_summary(), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_item_movement(
+    handle: *mut CoreHandleWrapper,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(wrapper, h.run_item_movement(), out_json)
 }
 
 #[unsafe(no_mangle)]
@@ -540,54 +663,6 @@ pub unsafe extern "C" fn warehouse_list_issued_assets(
 }
 
 // ── Drafts ──────────────────────────────────────────────────────
-
-macro_rules! block_on_void {
-    ($wrapper:expr, $h:ident.$method:ident($($args:tt)*)) => {{
-        let w: &mut CoreHandleWrapper = $wrapper;
-        let $h = &mut w.handle;
-        match w.runtime.block_on($h.$method($($args)*)) {
-            Ok(_) => CoreErrorDto::success(),
-            Err(e) => CoreErrorDto::from_error(&e),
-        }
-    }};
-    ($wrapper:expr, $call:expr) => {{
-        let w: &mut CoreHandleWrapper = $wrapper;
-        match w.runtime.block_on($call) {
-            Ok(_) => CoreErrorDto::success(),
-            Err(e) => CoreErrorDto::from_error(&e),
-        }
-    }};
-}
-
-macro_rules! block_on_json {
-    ($wrapper:expr, $h:ident.$method:ident($($args:tt)*), $out_json:expr) => {{
-        let w: &mut CoreHandleWrapper = $wrapper;
-        let $h = &mut w.handle;
-        match w.runtime.block_on($h.$method($($args)*)) {
-            Ok(r) => {
-                let json = serde_json::to_string(&r).unwrap_or_else(|_| "null".into());
-                if !$out_json.is_null() {
-                    *$out_json = string_to_c_str(json);
-                }
-                CoreErrorDto::success()
-            }
-            Err(e) => CoreErrorDto::from_error(&e),
-        }
-    }};
-    ($wrapper:expr, $call:expr, $out_json:expr) => {{
-        let w: &mut CoreHandleWrapper = $wrapper;
-        match w.runtime.block_on($call) {
-            Ok(r) => {
-                let json = serde_json::to_string(&r).unwrap_or_else(|_| "null".into());
-                if !$out_json.is_null() {
-                    *$out_json = string_to_c_str(json);
-                }
-                CoreErrorDto::success()
-            }
-            Err(e) => CoreErrorDto::from_error(&e),
-        }
-    }};
-}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn warehouse_create_draft(
@@ -773,6 +848,92 @@ pub unsafe extern "C" fn warehouse_delete_draft_line(
     let did = c_str_to_string(draft_id).unwrap_or_default();
     let lid = c_str_to_string(line_id).unwrap_or_default();
     block_on_json!(wrapper, h.delete_draft_line(&did, &lid), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_update_draft_header(
+    handle: *mut CoreHandleWrapper,
+    draft_id: *const c_char,
+    operation_type: *const c_char,
+    site_id: i32,
+    effective_at: *const c_char,
+    source_site_id: i32,
+    destination_site_id: i32,
+    recipient_id: i32,
+    issued_to_name: *const c_char,
+    comment: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let did = c_str_to_string(draft_id).unwrap_or_default();
+    use warehouse_core::domain::operation::OperationType;
+    let op_type: Option<OperationType> = c_str_to_string(operation_type)
+        .and_then(|s| serde_json::from_str(&format!("\"{s}\"")).ok());
+    block_on_json!(
+        wrapper,
+        h.update_draft_header(
+            &did,
+            op_type,
+            if site_id > 0 {
+                Some(Some(site_id))
+            } else {
+                Some(None)
+            },
+            Some(c_str_to_string(effective_at)),
+            if source_site_id > 0 {
+                Some(Some(source_site_id))
+            } else {
+                Some(None)
+            },
+            if destination_site_id > 0 {
+                Some(Some(destination_site_id))
+            } else {
+                Some(None)
+            },
+            if recipient_id > 0 {
+                Some(Some(recipient_id))
+            } else {
+                Some(None)
+            },
+            Some(c_str_to_string(issued_to_name)),
+            Some(c_str_to_string(comment)),
+        ),
+        out_json
+    )
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_update_draft_line(
+    handle: *mut CoreHandleWrapper,
+    draft_id: *const c_char,
+    line_id: *const c_char,
+    qty: *const c_char,
+    batch: *const c_char,
+    comment: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let did = c_str_to_string(draft_id).unwrap_or_default();
+    let lid = c_str_to_string(line_id).unwrap_or_default();
+    let qty_val: Option<serde_json::Value> = c_str_to_string(qty)
+        .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
+    block_on_json!(
+        wrapper,
+        h.update_draft_line(
+            &did,
+            &lid,
+            qty_val,
+            Some(c_str_to_string(batch)),
+            Some(c_str_to_string(comment))
+        ),
+        out_json
+    )
 }
 
 // ── Outbox ──────────────────────────────────────────────────────
@@ -1130,7 +1291,7 @@ pub unsafe extern "C" fn warehouse_free_bytes(ptr: *mut u8, len: usize) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn warehouse_resolve_lost_asset(
     handle: *mut CoreHandleWrapper,
-    operation_line_id: i64,
+    operation_line_id: *const c_char,
     action: *const c_char,
     qty: *const c_char,
     out_json: *mut *mut c_char,
@@ -1139,6 +1300,7 @@ pub unsafe extern "C" fn warehouse_resolve_lost_asset(
         Ok(w) => w,
         Err(e) => return e,
     };
+    let line_id = c_str_to_string(operation_line_id).unwrap_or_default();
     use warehouse_core::domain::assets::LostAssetResolveAction;
     let action_str = c_str_to_string(action).unwrap_or_default();
     let resolve_action = match action_str.as_str() {
@@ -1160,7 +1322,7 @@ pub unsafe extern "C" fn warehouse_resolve_lost_asset(
     } = wrapper;
     match wrapper
         .runtime
-        .block_on(wrapper.handle.resolve_lost_asset(operation_line_id, &req))
+        .block_on(wrapper.handle.resolve_lost_asset(&line_id, &req))
     {
         Ok(r) => {
             let json = serde_json::to_string(&r).unwrap_or_else(|_| "null".into());
@@ -1270,6 +1432,253 @@ pub unsafe extern "C" fn warehouse_ready_remote(
         }
         Err(e) => CoreErrorDto::from_error(&e),
     }
+}
+
+// ── Issue Objects ───────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_list_issue_objects(
+    handle: *mut CoreHandleWrapper,
+    page: u32,
+    page_size: u32,
+    search: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let search_opt = c_str_to_string(search);
+    match wrapper.runtime.block_on(wrapper.handle.list_issue_objects(
+        page,
+        page_size,
+        search_opt.as_deref(),
+    )) {
+        Ok(r) => {
+            let json = serde_json::to_string(&r).unwrap_or_else(|_| "null".into());
+            if !out_json.is_null() {
+                *out_json = string_to_c_str(json);
+            }
+            CoreErrorDto::success()
+        }
+        Err(e) => CoreErrorDto::from_error(&e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_get_issue_object(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(wrapper, h.get_issue_object(id), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_create_issue_object(
+    handle: *mut CoreHandleWrapper,
+    body_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let body_str = c_str_to_string(body_json).unwrap_or_default();
+    let body: warehouse_core::domain::issue_objects::IssueObjectCreate =
+        match serde_json::from_str(&body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return CoreErrorDto::from_error(&warehouse_core::CoreError::Validation(format!(
+                    "Invalid body JSON: {e}"
+                )));
+            }
+        };
+    block_on_json!(wrapper, h.create_issue_object(&body), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_update_issue_object(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+    body_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let body_str = c_str_to_string(body_json).unwrap_or_default();
+    let body: warehouse_core::domain::issue_objects::IssueObjectUpdate =
+        match serde_json::from_str(&body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return CoreErrorDto::from_error(&warehouse_core::CoreError::Validation(format!(
+                    "Invalid body JSON: {e}"
+                )));
+            }
+        };
+    block_on_json!(wrapper, h.update_issue_object(id, &body), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_delete_issue_object(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_void!(wrapper, h.delete_issue_object(id))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_merge_issue_objects(
+    handle: *mut CoreHandleWrapper,
+    body_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let body_str = c_str_to_string(body_json).unwrap_or_default();
+    let body: warehouse_core::domain::issue_objects::IssueObjectMerge =
+        match serde_json::from_str(&body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return CoreErrorDto::from_error(&warehouse_core::CoreError::Validation(format!(
+                    "Invalid body JSON: {e}"
+                )));
+            }
+        };
+    block_on_json!(wrapper, h.merge_issue_objects(&body), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_list_issue_object_assets(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+    page: u32,
+    page_size: u32,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(
+        wrapper,
+        h.list_issue_object_assets(id, page, page_size),
+        out_json
+    )
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_get_issue_object_tree(
+    handle: *mut CoreHandleWrapper,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(wrapper, h.get_issue_object_tree(), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_list_issue_object_categories(
+    handle: *mut CoreHandleWrapper,
+    page: u32,
+    page_size: u32,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(
+        wrapper,
+        h.list_issue_object_categories(page, page_size),
+        out_json
+    )
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_get_issue_object_category(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_json!(wrapper, h.get_issue_object_category(id), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_create_issue_object_category(
+    handle: *mut CoreHandleWrapper,
+    body_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let body_str = c_str_to_string(body_json).unwrap_or_default();
+    let body: warehouse_core::domain::issue_objects::IssueObjectCategoryCreate =
+        match serde_json::from_str(&body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return CoreErrorDto::from_error(&warehouse_core::CoreError::Validation(format!(
+                    "Invalid body JSON: {e}"
+                )));
+            }
+        };
+    block_on_json!(wrapper, h.create_issue_object_category(&body), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_update_issue_object_category(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+    body_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    let body_str = c_str_to_string(body_json).unwrap_or_default();
+    let body: warehouse_core::domain::issue_objects::IssueObjectCategoryUpdate =
+        match serde_json::from_str(&body_str) {
+            Ok(b) => b,
+            Err(e) => {
+                return CoreErrorDto::from_error(&warehouse_core::CoreError::Validation(format!(
+                    "Invalid body JSON: {e}"
+                )));
+            }
+        };
+    block_on_json!(wrapper, h.update_issue_object_category(id, &body), out_json)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_delete_issue_object_category(
+    handle: *mut CoreHandleWrapper,
+    id: i32,
+) -> CoreErrorDto {
+    let wrapper = match verify_handle(handle) {
+        Ok(w) => w,
+        Err(e) => return e,
+    };
+    block_on_void!(wrapper, h.delete_issue_object_category(id))
 }
 
 #[unsafe(no_mangle)]

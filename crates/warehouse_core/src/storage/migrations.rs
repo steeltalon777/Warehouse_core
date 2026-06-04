@@ -32,6 +32,21 @@ pub fn all_migrations() -> Vec<Migration> {
             description: "Outbox enrich: command_type, idempotency_key, payload_hash, server_result",
             sql: include_str!("../../../../migrations/sqlite/0004_outbox_enrich.sql"),
         },
+        Migration {
+            version: 5,
+            description: "Asset operation_id/operation_line_id INTEGER → TEXT (UUID from server)",
+            sql: include_str!("../../../../migrations/sqlite/0005_operation_id_text.sql"),
+        },
+        Migration {
+            version: 6,
+            description: "Sync run enrichment: families_json and mode columns",
+            sql: include_str!("../../../../migrations/sqlite/0006_sync_runs_enrich.sql"),
+        },
+        Migration {
+            version: 7,
+            description: "Report cache operation_id INTEGER → TEXT for UUID support",
+            sql: include_str!("../../../../migrations/sqlite/0007_report_operation_id_text.sql"),
+        },
     ]
 }
 
@@ -140,7 +155,10 @@ mod tests {
         assert!(applied.contains(&2));
         assert!(applied.contains(&3));
         assert!(applied.contains(&4));
-        assert_eq!(applied.len(), 4);
+        assert!(applied.contains(&5));
+        assert!(applied.contains(&6));
+        assert!(applied.contains(&7));
+        assert_eq!(applied.len(), 7);
     }
 
     #[tokio::test]
@@ -157,6 +175,6 @@ mod tests {
         let pool = test_pool().await;
         run_migrations(&pool).await.unwrap();
         let v = current_version(&pool).await.unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 7);
     }
 }

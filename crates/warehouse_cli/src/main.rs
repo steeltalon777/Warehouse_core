@@ -63,6 +63,11 @@ enum Commands {
         #[command(subcommand)]
         action: AssetCommands,
     },
+    /// Manage documents (remote)
+    Documents {
+        #[command(subcommand)]
+        action: DocumentCommands,
+    },
     /// Manage operation drafts
     Draft {
         #[command(subcommand)]
@@ -77,6 +82,16 @@ enum Commands {
     Sync {
         #[command(subcommand)]
         action: SyncCommands,
+    },
+    /// Manage issue objects (remote)
+    IssueObjects {
+        #[command(subcommand)]
+        action: IssueObjectsCommands,
+    },
+    /// Manage issue object categories (remote)
+    IssueObjectCategories {
+        #[command(subcommand)]
+        action: IssueObjectCategoryCommands,
     },
 }
 
@@ -133,6 +148,11 @@ enum OperationCommands {
         #[arg(required = true)]
         operation_id: String,
     },
+    /// Delete a cancelled operation
+    Delete {
+        #[arg(required = true)]
+        operation_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -149,6 +169,20 @@ enum AssetCommands {
     Lost,
     /// List issued assets
     Issued,
+}
+
+#[derive(Subcommand, Debug)]
+enum DocumentCommands {
+    /// List documents for a site
+    List {
+        #[arg(required = true)]
+        site_id: i32,
+    },
+    /// Render a document as PDF
+    Render {
+        #[arg(required = true)]
+        doc_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -233,6 +267,79 @@ enum SyncCommands {
     Full,
 }
 
+#[derive(Subcommand, Debug)]
+enum IssueObjectsCommands {
+    /// List issue objects
+    List {
+        #[arg(short = 'P', long, default_value = "1")]
+        page: u32,
+        #[arg(short = 'S', long, default_value = "20")]
+        page_size: u32,
+        #[arg(short, long)]
+        search: Option<String>,
+    },
+    /// Get issue object by id
+    Get {
+        #[arg(required = true)]
+        id: i32,
+    },
+    /// Create an issue object
+    Create {
+        #[arg(required = true)]
+        display_name: String,
+        #[arg(required = true)]
+        object_type: String,
+        #[arg(long)]
+        code: Option<String>,
+        #[arg(long)]
+        comment: Option<String>,
+        #[arg(short = 'C', long)]
+        category_id: i32,
+    },
+    /// Update an issue object
+    Update {
+        #[arg(required = true)]
+        id: i32,
+        #[arg(long)]
+        display_name: Option<String>,
+        #[arg(long)]
+        object_type: Option<String>,
+        #[arg(long)]
+        code: Option<String>,
+        #[arg(long)]
+        comment: Option<String>,
+        #[arg(long)]
+        category_id: Option<i32>,
+        #[arg(long)]
+        is_active: Option<bool>,
+    },
+    /// Delete an issue object
+    Delete {
+        #[arg(required = true)]
+        id: i32,
+    },
+    /// Merge two issue objects
+    Merge {
+        #[arg(required = true)]
+        source_id: i32,
+        #[arg(required = true)]
+        target_id: i32,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum IssueObjectCategoryCommands {
+    /// List categories
+    List {
+        #[arg(short = 'P', long, default_value = "1")]
+        page: u32,
+        #[arg(short = 'S', long, default_value = "20")]
+        page_size: u32,
+    },
+    /// Show category tree
+    Tree,
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -280,8 +387,11 @@ async fn main() {
         Commands::TempItems { action } => cmd_temp_items(action).await,
         Commands::Assets { action } => cmd_assets(action).await,
         Commands::Draft { action } => cmd_draft(action).await,
+        Commands::Documents { action } => cmd_documents(action).await,
         Commands::Outbox { action } => cmd_outbox(action).await,
         Commands::Sync { action } => cmd_sync(action).await,
+        Commands::IssueObjects { action } => cmd_issue_objects(action).await,
+        Commands::IssueObjectCategories { action } => cmd_issue_object_categories(action).await,
     }
 }
 
@@ -517,6 +627,12 @@ async fn cmd_operations(action: OperationCommands) {
                 Err(e) => eprintln!("Error: {e}"),
             }
         }
+        OperationCommands::Delete { operation_id } => {
+            match handle.delete_operation(&operation_id).await {
+                Ok(_) => println!("Operation {operation_id} deleted."),
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
     }
 }
 
@@ -589,6 +705,52 @@ async fn cmd_assets(action: AssetCommands) {
             }
             Err(e) => eprintln!("Error: {e}"),
         },
+    }
+}
+
+async fn cmd_documents(action: DocumentCommands) {
+    let mut handle = match build_handle().await {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return;
+        }
+    };
+    match action {
+        DocumentCommands::List { site_id } => match handle.list_documents(site_id).await {
+            Ok(docs) => {
+                println!("Documents for site {site_id}:");
+                for doc in &docs {
+                    println!(
+                        "  [{}] {:?} — status: {:?}, date: {}",
+                        doc.id, doc.document_type, doc.status, doc.created_at
+                    );
+                }
+            }
+            Err(e) => eprintln!("Error: {e}"),
+        },
+        DocumentCommands::Render { doc_id } => {
+            let uuid: uuid::Uuid = match doc_id.parse() {
+                Ok(u) => u,
+                Err(e) => {
+                    eprintln!("Invalid document ID: {e}");
+                    return;
+                }
+            };
+            match handle.render_document(uuid).await {
+                Ok(bytes) => {
+                    println!("Document rendered: {} bytes", bytes.len());
+                    // Save to file for inspection
+                    let path = format!("/tmp/warehouse_doc_{doc_id}.pdf");
+                    if let Err(e) = tokio::fs::write(&path, &bytes).await {
+                        eprintln!("Warning: could not save to {path}: {e}");
+                    } else {
+                        println!("Saved to {path}");
+                    }
+                }
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
     }
 }
 
@@ -817,6 +979,163 @@ async fn cmd_sync(action: SyncCommands) {
     );
     if let Some(e) = &result.error {
         println!("  Error: {e}");
+    }
+}
+
+async fn cmd_issue_objects(action: IssueObjectsCommands) {
+    let mut handle = match build_handle().await {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return;
+        }
+    };
+    match action {
+        IssueObjectsCommands::List {
+            page,
+            page_size,
+            search,
+        } => {
+            match handle
+                .list_issue_objects(page, page_size, search.as_deref())
+                .await
+            {
+                Ok(resp) => {
+                    println!("Issue objects ({} total):", resp.total_count);
+                    for obj in &resp.items {
+                        println!(
+                            "  [{}] {} ({}) — active: {}, category: {:?}",
+                            obj.id,
+                            obj.display_name,
+                            obj.object_type,
+                            obj.is_active,
+                            obj.category_id
+                        );
+                    }
+                }
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
+        IssueObjectsCommands::Get { id } => match handle.get_issue_object(id).await {
+            Ok(obj) => println!(
+                "[{}] {} ({}) — key: {}, active: {}, cat: {:?}",
+                obj.id,
+                obj.display_name,
+                obj.object_type,
+                obj.normalized_key,
+                obj.is_active,
+                obj.category_id
+            ),
+            Err(e) => eprintln!("Error: {e}"),
+        },
+        IssueObjectsCommands::Create {
+            display_name,
+            object_type,
+            code,
+            comment,
+            category_id,
+        } => {
+            let body = warehouse_core::domain::issue_objects::IssueObjectCreate {
+                display_name,
+                object_type,
+                code,
+                comment,
+                category_id: Some(category_id),
+            };
+            match handle.create_issue_object(&body).await {
+                Ok(obj) => println!("Created issue object [{}] {}", obj.id, obj.display_name),
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
+        IssueObjectsCommands::Update {
+            id,
+            display_name,
+            object_type,
+            code,
+            comment,
+            category_id,
+            is_active,
+        } => {
+            let body = warehouse_core::domain::issue_objects::IssueObjectUpdate {
+                display_name,
+                object_type,
+                code,
+                comment,
+                category_id,
+                is_active,
+            };
+            match handle.update_issue_object(id, &body).await {
+                Ok(obj) => println!("Updated issue object [{}] {}", obj.id, obj.display_name),
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
+        IssueObjectsCommands::Delete { id } => match handle.delete_issue_object(id).await {
+            Ok(_) => println!("Issue object {id} deleted."),
+            Err(e) => eprintln!("Error: {e}"),
+        },
+        IssueObjectsCommands::Merge {
+            source_id,
+            target_id,
+        } => {
+            let body = warehouse_core::domain::issue_objects::IssueObjectMerge {
+                source_id,
+                target_id,
+            };
+            match handle.merge_issue_objects(&body).await {
+                Ok(obj) => println!("Merged into issue object [{}] {}", obj.id, obj.display_name),
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
+    }
+}
+
+async fn cmd_issue_object_categories(action: IssueObjectCategoryCommands) {
+    let mut handle = match build_handle().await {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return;
+        }
+    };
+    match action {
+        IssueObjectCategoryCommands::List { page, page_size } => {
+            match handle.list_issue_object_categories(page, page_size).await {
+                Ok(resp) => {
+                    println!("Issue object categories ({} total):", resp.total_count);
+                    for cat in &resp.items {
+                        println!(
+                            "  [{}] {} — active: {}, sort: {}",
+                            cat.id, cat.name, cat.is_active, cat.sort_order
+                        );
+                    }
+                }
+                Err(e) => eprintln!("Error: {e}"),
+            }
+        }
+        IssueObjectCategoryCommands::Tree => match handle.get_issue_object_tree().await {
+            Ok(tree) => {
+                fn print_tree(
+                    nodes: &[warehouse_core::domain::issue_objects::IssueObjectTreeDto],
+                    indent: usize,
+                ) {
+                    for node in nodes {
+                        println!(
+                            "{:indent$}[{}] {} ({})",
+                            "",
+                            node.id,
+                            node.name,
+                            node.r#type,
+                            indent = indent
+                        );
+                        if !node.children.is_empty() {
+                            print_tree(&node.children, indent + 2);
+                        }
+                    }
+                }
+                print_tree(&tree, 0);
+            }
+            Err(e) => eprintln!("Error: {e}"),
+        },
     }
 }
 

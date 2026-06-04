@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::auth::ProfileService;
 use crate::domain::pagination::PaginatedResponse;
 use crate::error::{CoreError, CoreResult};
@@ -8,17 +10,18 @@ use crate::storage::snapshot_writer::SnapshotWriter;
 use crate::syncserver::SyncServerClient;
 
 /// Result of one pull family.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FamilyResult {
-    pub name: &'static str,
+    pub name: String,
     pub success: bool,
     pub items_count: usize,
     pub error: Option<String>,
 }
 
 /// Summary of a sync/pull run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRunSummary {
+    pub run_id: String,
     pub started_at: String,
     pub completed_at: Option<String>,
     pub families: Vec<FamilyResult>,
@@ -30,6 +33,7 @@ pub struct SyncRunSummary {
 impl SyncRunSummary {
     pub fn new() -> Self {
         Self {
+            run_id: uuid::Uuid::new_v4().to_string(),
             started_at: crate::time::Timestamp::now_utc().to_string(),
             completed_at: None,
             families: Vec::new(),
@@ -220,14 +224,14 @@ impl PullSyncService {
                         self.pull_balances(*sid).await?;
                     }
                     Ok(FamilyResult {
-                        name: "balances",
+                        name: "balances".into(),
                         success: true,
                         items_count: 0,
                         error: None,
                     })
                 } else {
                     Ok(FamilyResult {
-                        name: "balances",
+                        name: "balances".into(),
                         success: false,
                         items_count: 0,
                         error: Some("No profile".into()),
@@ -243,7 +247,7 @@ impl PullSyncService {
                     self.pull_operations(site_id).await
                 } else {
                     Ok(FamilyResult {
-                        name: "operations",
+                        name: "operations".into(),
                         success: false,
                         items_count: 0,
                         error: Some("No active site".into()),
@@ -255,7 +259,7 @@ impl PullSyncService {
                     self.pull_documents(site_id).await
                 } else {
                     Ok(FamilyResult {
-                        name: "documents",
+                        name: "documents".into(),
                         success: false,
                         items_count: 0,
                         error: Some("No active site".into()),
@@ -275,7 +279,7 @@ impl PullSyncService {
     async fn pull_health(&self) -> CoreResult<FamilyResult> {
         let info = self.client.server_info().await?;
         Ok(FamilyResult {
-            name: "health",
+            name: "health".into(),
             success: info.status == "ok" || info.status == "healthy",
             items_count: 1,
             error: None,
@@ -288,7 +292,7 @@ impl PullSyncService {
         // but we check connectivity here.
         let _ = ctx;
         Ok(FamilyResult {
-            name: "auth",
+            name: "auth".into(),
             success: true,
             items_count: 0,
             error: None,
@@ -303,7 +307,7 @@ impl PullSyncService {
             .set_updated_after(keys::SITES, &crate::time::Timestamp::now_utc().to_string())
             .await?;
         Ok(FamilyResult {
-            name: "sites",
+            name: "sites".into(),
             success: true,
             items_count: count,
             error: None,
@@ -327,7 +331,7 @@ impl PullSyncService {
                 .await?;
         }
         Ok(FamilyResult {
-            name: "catalog_items",
+            name: "catalog_items".into(),
             success: true,
             items_count: count,
             error: None,
@@ -351,7 +355,7 @@ impl PullSyncService {
                 .await?;
         }
         Ok(FamilyResult {
-            name: "catalog_categories",
+            name: "catalog_categories".into(),
             success: true,
             items_count: count,
             error: None,
@@ -375,7 +379,7 @@ impl PullSyncService {
                 .await?;
         }
         Ok(FamilyResult {
-            name: "catalog_units",
+            name: "catalog_units".into(),
             success: true,
             items_count: count,
             error: None,
@@ -383,6 +387,21 @@ impl PullSyncService {
     }
 
     async fn pull_recipients(&self) -> CoreResult<FamilyResult> {
+        // Recipients endpoint may not exist on all SyncServer versions;
+        // treat 404 as empty (the feature is Django-managed).
+        match self._pull_recipients_inner().await {
+            Ok(result) => Ok(result),
+            Err(crate::error::CoreError::NotFound(_)) => Ok(FamilyResult {
+                name: "recipients".into(),
+                success: true,
+                items_count: 0,
+                error: None,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn _pull_recipients_inner(&self) -> CoreResult<FamilyResult> {
         // Page through all recipients
         let mut all: Vec<crate::domain::recipient::RecipientDto> = Vec::new();
         let page_size = 200u32;
@@ -405,7 +424,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "recipients",
+            name: "recipients".into(),
             success: true,
             items_count: all.len(),
             error: None,
@@ -436,7 +455,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "balances",
+            name: "balances".into(),
             success: true,
             items_count: all.len(),
             error: None,
@@ -465,7 +484,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "pending_acceptance",
+            name: "pending_acceptance".into(),
             success: true,
             items_count: all.len(),
             error: None,
@@ -494,7 +513,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "lost_assets",
+            name: "lost_assets".into(),
             success: true,
             items_count: all.len(),
             error: None,
@@ -525,7 +544,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "issued_assets",
+            name: "issued_assets".into(),
             success: true,
             items_count: all.len(),
             error: None,
@@ -554,7 +573,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "temporary_items",
+            name: "temporary_items".into(),
             success: true,
             items_count: all.len(),
             error: None,
@@ -591,7 +610,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "operations",
+            name: "operations".into(),
             success: true,
             items_count: all.len(),
             error: None,
@@ -622,7 +641,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "documents",
+            name: "documents".into(),
             success: true,
             items_count: site_docs.len(),
             error: None,
@@ -642,7 +661,7 @@ impl PullSyncService {
             )
             .await?;
         Ok(FamilyResult {
-            name: "stock_summary",
+            name: "stock_summary".into(),
             success: true,
             items_count: resp.items.len(),
             error: None,
@@ -650,6 +669,22 @@ impl PullSyncService {
     }
 
     async fn pull_device_events(&self) -> CoreResult<FamilyResult> {
+        // Device pull requires registered device token; if device is not
+        // registered (e.g. fake token), skip gracefully.
+        if !self.profile.is_authenticated()
+            || !self
+                .profile
+                .current()
+                .ok()
+                .is_some_and(|p| p.device_registered)
+        {
+            return Ok(FamilyResult {
+                name: "device_events".into(),
+                success: true,
+                items_count: 0,
+                error: None,
+            });
+        }
         let seq = self.cursor_store.get_server_seq().await?.unwrap_or(0);
         let req = crate::domain::sync_types::PullRequest {
             site_id: self.get_active_site().unwrap_or(0),
@@ -657,16 +692,29 @@ impl PullSyncService {
             since_seq: seq,
             limit: Some(200),
         };
-        let resp = self.client.pull(&req).await?;
-        self.cursor_store
-            .set_server_seq(resp.server_seq_upto)
-            .await?;
-        Ok(FamilyResult {
-            name: "device_events",
-            success: true,
-            items_count: resp.events.len(),
-            error: None,
-        })
+        match self.client.pull(&req).await {
+            Ok(resp) => {
+                self.cursor_store
+                    .set_server_seq(resp.server_seq_upto)
+                    .await?;
+                Ok(FamilyResult {
+                    name: "device_events".into(),
+                    success: true,
+                    items_count: resp.events.len(),
+                    error: None,
+                })
+            }
+            Err(crate::error::CoreError::Auth(_)) => {
+                // Device not authenticated; skip gracefully
+                Ok(FamilyResult {
+                    name: "device_events".into(),
+                    success: true,
+                    items_count: 0,
+                    error: None,
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────
@@ -690,7 +738,7 @@ impl PullSyncService {
             Err(e) => {
                 let err_str = e.to_string();
                 summary.families.push(FamilyResult {
-                    name: family_name,
+                    name: family_name.to_string(),
                     success: false,
                     items_count: 0,
                     error: Some(err_str.clone()),

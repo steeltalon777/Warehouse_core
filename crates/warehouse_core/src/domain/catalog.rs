@@ -17,6 +17,14 @@ pub struct ItemDto {
     pub updated_at: String,
     #[serde(default)]
     pub created_at: Option<String>,
+    #[serde(default)]
+    pub created_by_user_id: Option<String>,
+    #[serde(default)]
+    pub updated_by_user_id: Option<String>,
+    #[serde(default)]
+    pub created_by_user_name: Option<String>,
+    #[serde(default)]
+    pub updated_by_user_name: Option<String>,
 }
 
 /// Category from /catalog/categories
@@ -28,6 +36,14 @@ pub struct CategoryDto {
     pub parent_id: Option<i32>,
     pub is_active: bool,
     pub updated_at: String,
+    #[serde(default)]
+    pub created_by_user_id: Option<String>,
+    #[serde(default)]
+    pub updated_by_user_id: Option<String>,
+    #[serde(default)]
+    pub created_by_user_name: Option<String>,
+    #[serde(default)]
+    pub updated_by_user_name: Option<String>,
 }
 
 /// Unit from /catalog/units
@@ -38,6 +54,14 @@ pub struct UnitDto {
     pub symbol: String,
     pub is_active: bool,
     pub updated_at: String,
+    #[serde(default)]
+    pub created_by_user_id: Option<String>,
+    #[serde(default)]
+    pub updated_by_user_id: Option<String>,
+    #[serde(default)]
+    pub created_by_user_name: Option<String>,
+    #[serde(default)]
+    pub updated_by_user_name: Option<String>,
 }
 
 /// CatalogSiteDto from /catalog/sites

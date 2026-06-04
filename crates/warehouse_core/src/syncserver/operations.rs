@@ -115,4 +115,10 @@ impl SyncServerClient {
             .json(accept);
         self.send(req).await
     }
+
+    /// DELETE /operations/{id} — delete cancelled operation
+    pub async fn operations_delete(&self, id: &str) -> CoreResult<()> {
+        let req = self.delete(&format!("/api/v1/operations/{id}"), AuthKind::User);
+        self.send_no_body(req).await
+    }
 }
