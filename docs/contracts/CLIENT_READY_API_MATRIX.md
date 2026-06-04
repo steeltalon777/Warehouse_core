@@ -62,8 +62,10 @@ Feature-gated behind runtime `allow_catalog_admin`. Only `root` and `chief_store
 |---|---|
 | `GET/POST` | `/catalog/admin/units` |
 | `GET/PATCH/DELETE` | `/catalog/admin/units/{id}` |
+| `POST` | `/catalog/admin/units/bulk` |
 | `GET/POST` | `/catalog/admin/categories` |
 | `GET/PATCH/DELETE` | `/catalog/admin/categories/{id}` |
+| `POST` | `/catalog/admin/categories/bulk` |
 | `GET/POST` | `/catalog/admin/items` |
 | `GET/PATCH/DELETE` | `/catalog/admin/items/{id}` |
 
@@ -117,6 +119,7 @@ Feature-gated behind runtime `allow_catalog_admin`. Only `root` and `chief_store
 | `GET` | `/documents` | List documents |
 | `PATCH` | `/documents/{id}/status` | Finalize/void |
 | `GET` | `/documents/operations/{op_id}/documents` | Link by operation |
+| `POST` | `/documents/operations/{op_id}/documents` | Create document for operation (shortcut) |
 
 ---
 

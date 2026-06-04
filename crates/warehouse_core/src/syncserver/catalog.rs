@@ -13,6 +13,18 @@ struct CatalogSitesResponse {
     server_time: String,
 }
 
+/// Wrapper for POST /catalog/admin/categories/bulk response
+#[derive(Deserialize)]
+struct BulkCategoriesResponse {
+    items: Vec<CategoryDto>,
+}
+
+/// Wrapper for POST /catalog/admin/units/bulk response
+#[derive(Deserialize)]
+struct BulkUnitsResponse {
+    items: Vec<UnitDto>,
+}
+
 impl SyncServerClient {
     pub async fn catalog_items(
         &self,
@@ -68,5 +80,28 @@ impl SyncServerClient {
         let req = self.get("/api/v1/catalog/sites", AuthKind::User);
         let resp: CatalogSitesResponse = self.send(req).await?;
         Ok(resp.sites)
+    }
+
+    /// POST /catalog/admin/categories/bulk — bulk create categories (admin)
+    pub async fn categories_create_bulk(
+        &self,
+        categories: &[serde_json::Value],
+    ) -> CoreResult<Vec<CategoryDto>> {
+        let body = serde_json::json!({"items": categories});
+        let req = self
+            .post("/api/v1/catalog/admin/categories/bulk", AuthKind::User)
+            .json(&body);
+        let resp: BulkCategoriesResponse = self.send(req).await?;
+        Ok(resp.items)
+    }
+
+    /// POST /catalog/admin/units/bulk — bulk create units (admin)
+    pub async fn units_create_bulk(&self, units: &[serde_json::Value]) -> CoreResult<Vec<UnitDto>> {
+        let body = serde_json::json!({"items": units});
+        let req = self
+            .post("/api/v1/catalog/admin/units/bulk", AuthKind::User)
+            .json(&body);
+        let resp: BulkUnitsResponse = self.send(req).await?;
+        Ok(resp.items)
     }
 }
