@@ -296,6 +296,18 @@ impl SnapshotWriter {
         Ok(())
     }
 
+    /// Confirmed operations are proxied directly from SyncServer API.
+    ///
+    /// Local SQLite stores only drafts (`operation_drafts` table) — the core
+    /// is offline-first for *user intent*, not for the authoritative history
+    /// of confirmed operations. Caching confirmed operations here would
+    /// duplicate data without a clear offline use case, since every read path
+    /// that needs them can call `CoreHandle::list_operations` and let
+    /// `SyncServerClient` cache the response.
+    ///
+    /// This method is intentionally a no-op kept as part of the `SnapshotWriter`
+    /// family signature so the pull engine does not need to special-case
+    /// operations. See ADR-0016 and ADR-0017.
     pub async fn write_operations(&self, ops: &[OperationListItem]) -> CoreResult<()> {
         let _ = ops;
         Ok(())
