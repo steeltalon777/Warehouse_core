@@ -1,5 +1,7 @@
 # Warehouse Client Core
 
+Этот компонент Quartermaster: offline-first Rust runtime.
+
 Offline-first Rust runtime for Warehouse Desktop (WPF) and Warehouse Mobile (Android) clients.
 
 ## Project Status

@@ -120,6 +120,24 @@ pub unsafe extern "C" fn warehouse_init() {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
+/// Returns a static, NUL-terminated C string with the warehouse_core version
+/// and FFI surface info. Intended for smoke tests and runtime diagnostics
+/// from non-Rust clients (WPF, Android, etc.).
+///
+/// The returned pointer is valid for the lifetime of the loaded library;
+/// callers MUST NOT free it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn warehouse_core_version() -> *const c_char {
+    // Embed version + key build info so callers can identify the loaded
+    // cdylib at runtime.
+    let info = concat!(
+        "warehouse_core ",
+        env!("CARGO_PKG_VERSION"),
+        " (ffi=cdylib)"
+    );
+    info.as_ptr() as *const c_char
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn warehouse_open(
     db_path: *const c_char,
